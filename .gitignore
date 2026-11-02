@@ -1,0 +1,58 @@
+# ==========================================
+# PROJETO FRIDA - Git Ignore
+# Chaves de API, Segredos, Credenciais e Dados Pessoais
+# ==========================================
+
+# Arquivos de configuracao com chaves de API e nomes pessoais
+config.json
+**/config.json
+frida_settings.json
+**/frida_settings.json
+*.env
+*.env.*
+*.key
+*.pem
+
+# Perfil Biometrico Vocal do Operador (Vetor MFCC pessoal)
+frida_voice_profile.json
+**/frida_voice_profile.json
+
+# Telemetria e consumo real de cotas das APIs
+llm_usage.json
+**/llm_usage.json
+
+# Caches de audio, voz, microfone e debug de filtros vocais
+tts_cache/
+**/tts_cache/
+voice_filter_debug/
+**/voice_filter_debug/
+
+# Logs de execucao e inicializacao (podem conter transcricoes do microfone)
+*.log
+**/frida_boot.log
+ErrorReports/
+**/ErrorReports/
+
+# Pastas de backup locais
+_backup_*/
+**/_backup_*/
+
+# Binarios compilados (.exe, .dll, .pdb)
+*.exe
+*.dll
+*.pdb
+*.obj
+*.bin
+
+# Artefatos temporarios e de IDE
+.vs/
+bin/
+obj/
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db
+
+
+push_github.bat
+push_deploy_key.bat

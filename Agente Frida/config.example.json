@@ -1,0 +1,47 @@
+{
+  "api_key": "COLOQUE_SUA_CHAVE_GEMINI_AQUI",
+  "groq_api_key": "",
+  "cerebras_api_key": "",
+  "openrouter_api_key": "",
+  "zai_glm_api_key": "",
+  "siliconflow_api_key": "",
+  "prefer_zero_quota_tts": false,
+  "operator_name": "Operador",
+  "female_voice": "Aoede",
+  "tts_model": "gemini-3.8-flash-lite-tts",
+  "transcribe_model": "gemini-3.5-transcribe",
+  "brain_models": [
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemma-4-26b-a4b-it",
+    "gemini-3.5-flash",
+    "gemini-3.8-flash",
+    "gemini-3.1-flash-lite",
+    "gemini-3.6-flash"
+  ],
+  "wake_phrases": [
+    "Frida",
+    "Oi Frida",
+    "Ei Frida",
+    "Ola Frida",
+    "Ok Frida",
+    "Fala Frida",
+    "Ativar Frida",
+    "Escuta Frida"
+  ],
+  "start_with_windows": true,
+  "play_startup_greeting": true,
+  "followup_listen_seconds": 7,
+  "preferred_mic_device": -1,
+  "orb_x": -1,
+  "orb_y": -1,
+  "vad_speech_multiplier": 1.65,
+  "min_rms_threshold": 220,
+  "disabled_models": [],
+  "preferred_models": [],
+  "speaker_lock_enabled": true,
+  "natural_voice_only": true,
+  "speaker_lock_tolerance": 1.0
+}
+
