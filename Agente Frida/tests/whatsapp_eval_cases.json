@@ -1,0 +1,301 @@
+[
+  {
+    "request": "pesquise nos grupos do whatsapp e me retorne infromações sobre o 3213",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "group",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "busque 3213 no WhatsApp",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "procure mensagens sobre 3213 no WhatsApp",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Busque orçamento na conversa com Ana no WhatsApp",
+    "expected": {
+      "operation": "search",
+      "query": "orçamento",
+      "chat_type": "contact",
+      "chat_name": "Ana"
+    }
+  },
+  {
+    "request": "Pesquise 3213 no grupo PLB do WhatsApp",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "group",
+      "chat_name": "PLB"
+    }
+  },
+  {
+    "request": "Liste os grupos do WhatsApp",
+    "expected": {
+      "operation": "list_groups",
+      "query": "",
+      "chat_type": "group",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Liste as conversas do WhatsApp",
+    "expected": {
+      "operation": "list_chats",
+      "query": "",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Leia a conversa com Ana no WhatsApp",
+    "expected": {
+      "operation": "read_chat",
+      "query": "",
+      "chat_type": "contact",
+      "chat_name": "Ana"
+    }
+  },
+  {
+    "request": "Leia o grupo PLB no WhatsApp",
+    "expected": {
+      "operation": "read_group",
+      "query": "",
+      "chat_type": "group",
+      "chat_name": "PLB"
+    }
+  },
+  {
+    "request": "Mostre mensagens não lidas no WhatsApp",
+    "expected": {
+      "operation": "read_unread",
+      "query": "",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Qual o status da conexão do WhatsApp?",
+    "expected": {
+      "operation": "status",
+      "query": "",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Pareie o WhatsApp",
+    "expected": {
+      "operation": "pair",
+      "query": "",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Pesquise 3213 somente no cache do WhatsApp",
+    "expected": {
+      "operation": "search_cache",
+      "query": "3213",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "No WhatsApp, procure a frase \"teste de bancada\"",
+    "expected": {
+      "operation": "search",
+      "query": "teste de bancada",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Procure AB-3213 no WhatsApp",
+    "expected": {
+      "operation": "search",
+      "query": "AB-3213",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Busque 3213 no WhatsApp ontem",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "all",
+      "chat_name": "",
+      "date_from": "2026-11-03T00:00:00-03:00",
+      "date_to": "2026-11-04T00:00:00-03:00"
+    }
+  },
+  {
+    "request": "Busque 3213 no WhatsApp hoje",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "all",
+      "chat_name": "",
+      "date_from": "2026-11-04T00:00:00-03:00",
+      "date_to": "2026-11-05T00:00:00-03:00"
+    }
+  },
+  {
+    "request": "Busque 3213 no WhatsApp no dia 2 de novembro de 2026",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "all",
+      "chat_name": "",
+      "date_from": "2026-11-02T00:00:00-03:00",
+      "date_to": "2026-11-03T00:00:00-03:00"
+    }
+  },
+  {
+    "request": "Pesquise 3213 em todo o histórico do WhatsApp",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "all",
+      "chat_name": "",
+      "date_from": "",
+      "date_to": ""
+    }
+  },
+  {
+    "request": "Busque 3213 no WhatsApp, mais antigas primeiro",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "all",
+      "chat_name": "",
+      "order": "oldest"
+    }
+  },
+  {
+    "request": "Busque 998877 no WhatsApp",
+    "expected": {
+      "operation": "search",
+      "query": "998877",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Procure entrega no grupo Equipe Técnica no WhatsApp",
+    "expected": {
+      "operation": "search",
+      "query": "entrega",
+      "chat_type": "group",
+      "chat_name": "Equipe Técnica"
+    }
+  },
+  {
+    "request": "Procure proposta na conversa com Maria no WhatsApp",
+    "expected": {
+      "operation": "search",
+      "query": "proposta",
+      "chat_type": "contact",
+      "chat_name": "Maria"
+    }
+  },
+  {
+    "request": "pesquize 3213 nos grupos do whatsapp",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "group",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Procure reunião no zap",
+    "expected": {
+      "operation": "search",
+      "query": "reunião",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Busque 3213 no wpp",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Veja mensagens sobre pagamento no whats",
+    "expected": {
+      "operation": "search",
+      "query": "pagamento",
+      "chat_type": "all",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "Busque \"motor 3213\" nas conversas individuais do WhatsApp",
+    "expected": {
+      "operation": "search",
+      "query": "motor 3213",
+      "chat_type": "contact",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "e ontem?",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "group",
+      "chat_name": "PLB",
+      "date_from": "2026-11-03T00:00:00-03:00",
+      "date_to": "2026-11-04T00:00:00-03:00"
+    },
+    "previous": {
+      "operation": "search",
+      "query": "3213",
+      "chat_name": "PLB",
+      "chat_type": "group",
+      "date_from": "",
+      "date_to": "",
+      "order": "newest"
+    }
+  },
+  {
+    "request": "continue",
+    "expected": {
+      "operation": "search",
+      "query": "3213",
+      "chat_type": "group",
+      "chat_name": "PLB"
+    },
+    "previous": {
+      "operation": "search",
+      "query": "3213",
+      "chat_name": "PLB",
+      "chat_type": "group",
+      "date_from": "",
+      "date_to": "",
+      "order": "newest"
+    }
+  }
+]

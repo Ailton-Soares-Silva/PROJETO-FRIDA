@@ -17,12 +17,13 @@ namespace FridaAgent
 {
     public enum DashboardRoom
     {
-        Overview = 0,    // 🏢 Visão Geral (Planta das 4 Salas Interligadas)
-        Office = 1,      // 💼 Escritório (Modelos Trabalhando para dj agora)
-        GameRoom = 2,    // 🎮 Sala de Jogos (Modelos Ociosos e em Standby)
-        BreakRoom = 3,   // 🛏️ Dormitório (Modelos com Cota Excedida / Cochilando)
-        MeetingRoom = 4, // 🏛️ Sala de Reuniões (Modelos Debatendo Consultas & Ações)
-        Consumption = 5  // 📊 Consumo & Histórico (provedores, 7 dias, últimas chamadas)
+        Overview = 0,
+        Hall = 1,
+        Office = 2,
+        GameRoom = 3,
+        BreakRoom = 4,
+        MeetingRoom = 5,
+        Consumption = 6
     }
 
     public class MeetingSpeechTurn
@@ -58,6 +59,7 @@ namespace FridaAgent
         public bool IsMoving = false;
         public int ActionTimer = 0;
         public string Activity = "idle";
+        public DashboardRoom? AssignedRoom;
         public int PartnerIndex = -1;
         public string SpeechBubble = null;
         public int BubbleTimer = 0;
@@ -80,7 +82,7 @@ namespace FridaAgent
         private readonly Action _openSettingsAction;
         private readonly JavaScriptSerializer _json = new JavaScriptSerializer();
 
-        private DashboardRoom _currentRoom = DashboardRoom.Overview;
+        private DashboardRoom _currentRoom = DashboardRoom.Hall;
 
         private System.Windows.Forms.Timer _animTimer;
         private int _animTick = 0;
@@ -90,7 +92,7 @@ namespace FridaAgent
         private int _selectedCharIndex = 0;
 
         // Abas de Salas
-        private readonly Rectangle[] _roomTabRects = new Rectangle[6];
+        private readonly Rectangle[] _roomTabRects = new Rectangle[7];
         private int _hoveredTab = -1;
 
         // Bounding boxes dos personagens ativos no painel
@@ -112,6 +114,8 @@ namespace FridaAgent
         private Rectangle _btnQuickTopic2Rect;
         private Rectangle _btnQuickTopic3Rect;
         private TextBox _txtMeetingTopic;
+        private RichTextBox _meetingLog;
+        private string _lastMeetingLog = "";
 
         private bool _isHoveringTestBtn = false;
         private bool _isHoveringResetBtn = false;
@@ -128,6 +132,49 @@ namespace FridaAgent
         private string _activeMeetingTopic = "Como projetar a melhor arquitetura e implementar com máxima eficiência?";
         private readonly List<MeetingSpeechTurn> _meetingTranscript = new List<MeetingSpeechTurn>();
         private string _meetingConsensus = "";
+
+        private static Func<string, Task<string>> _meetingHandler;
+        public static void ConfigureMeetingHandler(Func<string, Task<string>> handler) { _meetingHandler = handler; }
+
+        private List<ModelRuntimeStats> GetPanelStats()
+        {
+            return _currentRoom == DashboardRoom.Consumption ? ModelQuotaGuard.GetAllStats() : FridaTeamState.DashboardStats(_settings);
+        }
+
+        private void SyncTeamPresentation()
+        {
+            _meetingTranscript.Clear();
+            foreach (TeamMessage message in FridaTeamState.Transcript())
+            {
+                TeamMember member = FridaTeamState.Member(message.Role);
+                string body = "Para: " + message.Recipients + "\n" + message.Text;
+                _meetingTranscript.Add(new MeetingSpeechTurn(message.Title, message.Model, member.Sprite, body,
+                    message.Success ? Color.FromArgb(100, 210, 180) : Color.FromArgb(255, 155, 90)));
+            }
+            _isMeetingRunning = FridaTeamState.IsMeetingRunning;
+            _meetingConsensus = FridaTeamState.LastReport;
+            if (_isMeetingRunning) _activeMeetingTopic = FridaTeamState.Topic;
+            if (_meetingLog != null)
+            {
+                StringBuilder log = new StringBuilder();
+                foreach (TeamMessage message in FridaTeamState.Transcript())
+                {
+                    log.AppendLine(message.Title + " -> " + message.Recipients + " [" + message.Model + "]");
+                    log.AppendLine(message.Text);
+                    log.AppendLine();
+                }
+                if (log.Length == 0) log.Append(_isMeetingRunning ? "Reuniao em andamento. Aguardando a primeira resposta real." : "Digite uma solicitacao e inicie a reuniao. O gestor planeja, o tecnico executa, o analista audita e a Frida apresenta o resultado.");
+                if (!string.IsNullOrEmpty(_meetingConsensus)) log.AppendLine("RELATO FINAL DA FRIDA\n" + _meetingConsensus);
+                string value = log.ToString();
+                if (value != _lastMeetingLog)
+                {
+                    _lastMeetingLog = value;
+                    _meetingLog.Text = value;
+                    _meetingLog.SelectionStart = _meetingLog.TextLength;
+                    _meetingLog.ScrollToCaret();
+                }
+            }
+        }
 
         public static void ShowOrFocus(FridaSettings settings, string configPath, Action openSettingsAction)
         {
@@ -205,6 +252,7 @@ namespace FridaAgent
             _animTimer.Tick += delegate
             {
                 _animTick++;
+                SyncTeamPresentation();
                 if (_animTick % 15 == 0) UpdateCharacterSlotsForCurrentRoom();
                 UpdateActorSimulation();
                 _cloudOffset += 0.35f;
@@ -233,18 +281,11 @@ namespace FridaAgent
 
         private void InitRoomTabs()
         {
-            // Barra de Abas de Salas (Y: 42 até 74)
-            int tabW = 155;
-            int startX = 14;
-            int tabY = 44;
-            int tabH = 28;
-
-            _roomTabRects[0] = new Rectangle(startX, tabY, 135, tabH); // 🏢 Visão Geral
-            _roomTabRects[1] = new Rectangle(startX + 139, tabY, tabW, tabH); // 💼 Escritório
-            _roomTabRects[2] = new Rectangle(startX + 139 + tabW + 4, tabY, tabW, tabH); // 🎮 Sala de Jogos
-            _roomTabRects[3] = new Rectangle(startX + 139 + (tabW + 4) * 2, tabY, tabW, tabH); // 🛏️ Dormitório
-            _roomTabRects[4] = new Rectangle(startX + 139 + (tabW + 4) * 3, tabY, 165, tabH); // 🏛️ Reuniões
-            _roomTabRects[5] = new Rectangle(SidePanelRect.X, tabY, SidePanelRect.Width, tabH); // 📊 Consumo & Histórico
+            int available = SidePanelRect.X - 22;
+            int tabWidth = (available - 5 * 4) / 6;
+            for (int i = 0; i < 6; i++)
+                _roomTabRects[i] = new Rectangle(14 + i * (tabWidth + 4), 44, tabWidth, 28);
+            _roomTabRects[6] = new Rectangle(SidePanelRect.X, 44, SidePanelRect.Width, 28);
         }
 
         private void InitMeetingTopicInput()
@@ -267,11 +308,25 @@ namespace FridaAgent
                 }
             };
             Controls.Add(_txtMeetingTopic);
+            _meetingLog = new RichTextBox();
+            _meetingLog.ReadOnly = true;
+            _meetingLog.DetectUrls = false;
+            _meetingLog.BackColor = Color.FromArgb(10, 18, 32);
+            _meetingLog.ForeColor = Color.FromArgb(220, 235, 245);
+            _meetingLog.Font = new Font("Consolas", 9.0f);
+            _meetingLog.BorderStyle = BorderStyle.FixedSingle;
+            _meetingLog.Location = new Point(HudRect.X + 8, HudRect.Y + 76);
+            _meetingLog.Size = new Size(HudRect.Width - 16, HudRect.Height - 84);
+            _meetingLog.Visible = _currentRoom == DashboardRoom.MeetingRoom;
+            _meetingLog.ScrollBars = RichTextBoxScrollBars.Vertical;
+            Controls.Add(_meetingLog);
+            SyncTeamPresentation();
         }
 
         public void SwitchRoom(DashboardRoom room)
         {
             _currentRoom = room;
+            if (_meetingLog != null) _meetingLog.Visible = room == DashboardRoom.MeetingRoom;
             if (_txtMeetingTopic != null)
             {
                 _txtMeetingTopic.Location = new Point(HudRect.X + 144, HudRect.Y + 13);
@@ -299,7 +354,7 @@ namespace FridaAgent
 
         private void UpdateCharacterSlotsForCurrentRoom()
         {
-            List<ModelRuntimeStats> statsList = ModelQuotaGuard.GetAllStats();
+            List<ModelRuntimeStats> statsList = GetPanelStats();
             SyncSelectionWithKey(statsList);
 
             for (int i = 0; i < _characterSlots.Length; i++)
@@ -324,17 +379,14 @@ namespace FridaAgent
                 _actors[i].ModelKey = s.Key;
                 _actors[i].SpriteKey = s.SpriteKey ?? "scout";
 
-                bool belongsInCurrentRoom = false;
-                if (_currentRoom == DashboardRoom.Overview) belongsInCurrentRoom = true;
-                else if (_currentRoom == DashboardRoom.Office) belongsInCurrentRoom = s.IsActiveNow;
-                else if (_currentRoom == DashboardRoom.GameRoom) belongsInCurrentRoom = (!s.IsActiveNow && !s.IsCooldownActive());
-                else if (_currentRoom == DashboardRoom.BreakRoom) belongsInCurrentRoom = s.IsCooldownActive();
-                else if (_currentRoom == DashboardRoom.MeetingRoom) belongsInCurrentRoom = true;
+                bool belongsInCurrentRoom = s.TeamLocation.HasValue &&
+                    (_currentRoom == DashboardRoom.Overview || _currentRoom == s.TeamLocation.Value);
+                bool enteredRoom = belongsInCurrentRoom && _actors[i].AssignedRoom != s.TeamLocation;
 
                 _slotActiveInRoom[i] = belongsInCurrentRoom;
                 if (!belongsInCurrentRoom) continue;
 
-                if (roomChanged || _actors[i].CurrX < 10 || _actors[i].CurrY < 10)
+                if (roomChanged || enteredRoom || _actors[i].CurrX < 10 || _actors[i].CurrY < 10)
                 {
                     Point startPt = GetRoomInitialSpawn(i, activeCount, _currentRoom, room, s);
                     _actors[i].CurrX = startPt.X;
@@ -344,7 +396,8 @@ namespace FridaAgent
                     _actors[i].IsMoving = false;
                     _actors[i].ActionTimer = 30 + _actorRand.Next(60);
                     _actors[i].Facing = (s.IsActiveNow && _currentRoom == DashboardRoom.Office) ? 1 : 0;
-                    _actors[i].Activity = (s.IsCooldownActive() && _currentRoom == DashboardRoom.BreakRoom) ? "sleeping" : "idle";
+                    _actors[i].AssignedRoom = s.TeamLocation;
+                    _actors[i].Activity = "idle";
                 }
 
                 _characterSlots[i] = new Rectangle((int)_actors[i].CurrX - 34, (int)_actors[i].CurrY - 10, 68, 64);
@@ -357,13 +410,23 @@ namespace FridaAgent
             if (_currentRoom == DashboardRoom.Consumption) return;
 
             Rectangle room = new Rectangle(14, 76, SidePanelRect.X - 28, 426);
-            List<ModelRuntimeStats> statsList = ModelQuotaGuard.GetAllStats();
+            List<ModelRuntimeStats> statsList = GetPanelStats();
 
             for (int i = 0; i < _actors.Length; i++)
             {
                 if (!_slotActiveInRoom[i]) continue;
                 ZeldaActorState a = _actors[i];
                 ModelRuntimeStats s = (i < statsList.Count) ? statsList[i] : null;
+
+                // Trabalho individual fica fixo na propria baia, sem passeios ou conversas simuladas.
+                if (s != null && (_currentRoom == DashboardRoom.Office || _currentRoom == DashboardRoom.Hall || _currentRoom == DashboardRoom.Overview))
+                {
+                    a.IsMoving = false;
+                    a.Facing = s.TeamLocation == DashboardRoom.Office ? 1 : 0;
+                    a.Activity = s.TeamLocation == DashboardRoom.Office ? "working" : "ready";
+                    a.SpeechBubble = s.IsActiveNow ? "..." : null;
+                    continue;
+                }
 
                 // No Dormitorio, modelos com cota esgotada ficam dormindo na cama
                 if (_currentRoom == DashboardRoom.BreakRoom && s != null && s.IsCooldownActive())
@@ -379,21 +442,9 @@ namespace FridaAgent
                 // No Conclave de Reunioes com debate ativo
                 if (_currentRoom == DashboardRoom.MeetingRoom && _isMeetingRunning)
                 {
-                    int speakerIdx = (_animTick / 90) % Math.Max(1, statsList.Count);
-                    if (i == speakerIdx)
-                    {
-                        a.Activity = "deliberating";
-                        a.SpeechBubble = "💡";
-                        a.BubbleTimer = 30;
-                    }
-                    else
-                    {
-                        a.Activity = "listening";
-                        if (_actors[speakerIdx] != null)
-                        {
-                            a.Facing = (_actors[speakerIdx].CurrX > a.CurrX) ? 3 : 2;
-                        }
-                    }
+                    a.IsMoving = false;
+                    a.Activity = s != null && s.IsActiveNow ? "deliberating" : "listening";
+                    a.SpeechBubble = s != null && s.IsActiveNow ? "..." : null;
                     _characterSlots[i] = new Rectangle((int)a.CurrX - 34, (int)a.CurrY - 10, 68, 64);
                     continue;
                 }
@@ -569,10 +620,7 @@ namespace FridaAgent
         {
             if (roomType == DashboardRoom.Office)
             {
-                int deskIdx = activeCount % 4;
-                int dx = r.X + 110 + deskIdx * 210;
-                int dy = r.Y + 235;
-                return new Point(dx, dy);
+                return OfficeSeat(index, r);
             }
             else if (roomType == DashboardRoom.GameRoom)
             {
@@ -590,33 +638,41 @@ namespace FridaAgent
             }
             else if (roomType == DashboardRoom.BreakRoom)
             {
-                int bedIdx = activeCount % 4;
-                int bx = r.X + 90 + bedIdx * 215;
-                int by = r.Y + 235;
+                int bedIdx = activeCount;
+                int bx = r.X + 65 + (bedIdx % 4) * ((r.Width - 100) / 4);
+                int by = r.Y + 150 + (bedIdx / 4) * 145;
                 return new Point(bx, by);
             }
             else if (roomType == DashboardRoom.MeetingRoom)
             {
                 int cx = r.X + r.Width / 2;
                 int cy = r.Y + 215;
-                int totalChairs = Math.Max(1, Math.Min(12, Math.Max(activeCount + 1, 8)));
+                int totalChairs = Math.Max(1, GetPanelStats().FindAll(delegate(ModelRuntimeStats item) { return item.TeamLocation == DashboardRoom.MeetingRoom; }).Count);
                 double angle = (2.0 * Math.PI / totalChairs) * (activeCount % totalChairs) - Math.PI / 2.0;
                 int sx = cx + (int)(Math.Cos(angle) * 205.0);
                 int sy = cy + (int)(Math.Sin(angle) * 85.0);
                 return new Point(sx, sy);
             }
-            else // Overview
+            else if (roomType == DashboardRoom.Hall)
             {
-                int quad = 0;
-                if (s.IsActiveNow) quad = 0; // Top-Left
-                else if (s.IsCooldownActive()) quad = 2; // Bottom-Left
-                else quad = 1; // Top-Right
-
-                int qx = (quad % 2 == 0) ? r.X + 80 + (activeCount % 4) * 80 : r.X + r.Width / 2 + 50 + (activeCount % 4) * 80;
-                int qy = (quad < 2) ? r.Y + 70 + (activeCount / 4) * 45 : r.Y + r.Height / 2 + 50 + (activeCount / 4) * 45;
-                return new Point(qx, qy);
+                return new Point(r.X + 80 + (activeCount % 4) * Math.Max(100, (r.Width - 140) / 4), r.Y + 160 + (activeCount / 4) * 120);
+            }
+            else
+            {
+                Rectangle zone = OverviewZone(s.TeamLocation ?? DashboardRoom.Hall, r);
+                int ordinal = 0;
+                List<ModelRuntimeStats> team = GetPanelStats();
+                for (int j = 0; j < index && j < team.Count; j++) if (team[j].TeamLocation == s.TeamLocation) ordinal++;
+                return new Point(zone.X + 45 + (ordinal % 3) * Math.Max(65, (zone.Width - 80) / 3), zone.Y + 40 + (ordinal / 3) * 54);
             }
         }
+
+        private Point OfficeSeat(int index, Rectangle r)
+        {
+            int width = (r.Width - 80) / 4;
+            return new Point(r.X + 40 + (index % 4) * width + width / 2, r.Y + 150 + (index / 4) * 160);
+        }
+
 
         private Point GetRandomRoomPoi(DashboardRoom roomType, Rectangle r)
         {
@@ -811,7 +867,7 @@ namespace FridaAgent
                 }
             }
 
-            List<ModelRuntimeStats> allStats = ModelQuotaGuard.GetAllStats();
+            List<ModelRuntimeStats> allStats = GetPanelStats();
             if (_selectedCharIndex < 0 || _selectedCharIndex >= allStats.Count) return;
             ModelRuntimeStats current = allStats[_selectedCharIndex];
 
@@ -824,11 +880,10 @@ namespace FridaAgent
 
             if (_btnResetCooldownRect.Contains(e.Location))
             {
-                bool hadCooldown = current.IsCooldownActive();
-                ModelQuotaGuard.ForceClearCooldown(current.Bucket, current.ModelId);
-                SetFeedback(hadCooldown
-                    ? "Bloqueio local liberado. Se a cota do provedor ainda estiver esgotada, o próximo uso volta a bloquear."
-                    : "Este modelo não estava bloqueado.", 7);
+                int affected = ModelQuotaGuard.RefreshQuotaLimits(current.Bucket, current.ModelId);
+                SetFeedback(affected > 0
+                    ? "Cota local atualizada. Use Testar de Verdade ou o próximo atendimento para confirmar na API."
+                    : "Nenhuma cota liberada: modelo desativado, em uso ou bloqueado por outro erro.", 9);
                 UpdateCharacterSlotsForCurrentRoom();
                 PlayRetroChime();
                 Invalidate();
@@ -871,160 +926,17 @@ namespace FridaAgent
             catch { }
         }
 
+        private bool _meetingLaunchPending;
         private async void StartMeetingDeliberation()
         {
-            if (_isMeetingRunning) return;
-            _isMeetingRunning = true;
-            _meetingTranscript.Clear();
-            _meetingConsensus = "";
-
-            if (_txtMeetingTopic != null && !string.IsNullOrEmpty(_txtMeetingTopic.Text.Trim()))
-            {
-                _activeMeetingTopic = _txtMeetingTopic.Text.Trim();
-            }
-
-            PlayRetroChime();
-            Invalidate();
-
-            await Task.Run(async delegate
-            {
-                try
-                {
-                    // Fase 1: Batedor Groq (GPT-OSS-120B) propõe solução ultrarrápida
-                    string prompt1 = "Você é o Batedor Groq LPU na Sala de Reuniões de LLMs para atender dj. Tema da reunião: \"" + _activeMeetingTopic + "\". Em 2 frases diretas e práticas, qual a solução técnica ou passo inicial recomendado?";
-                    string reply1 = await QueryModelDirectAsync("oai_groq", "openai/gpt-oss-120b", prompt1, _settings.groq_api_key, "https://api.groq.com/openai/v1/chat/completions");
-                    if (string.IsNullOrEmpty(reply1)) reply1 = "[Sem resposta do modelo — nota padrão do painel] Sugiro atacar direto pelo núcleo da implementação, priorizando velocidade máxima e sem boilerplate.";
-
-                    AddMeetingTurn("Batedor Groq", "openai/gpt-oss-120b", "scout", reply1, Color.FromArgb(50, 230, 110));
-
-                    await Task.Delay(700);
-
-                    // Fase 2: Tático Qwen (Qwen-3.8-27B) analisa edge cases e aprofunda
-                    string prompt2 = "Você é o Tático Qwen na Sala de Reuniões. O Batedor sugeriu: \"" + reply1 + "\". Tema: \"" + _activeMeetingTopic + "\". Em 2 frases, analise riscos de segurança, edge cases e aponte o refino estratégico.";
-                    string reply2 = await QueryModelDirectAsync("oai_groq", "qwen/qwen3.8-27b", prompt2, _settings.groq_api_key, "https://api.groq.com/openai/v1/chat/completions");
-                    if (string.IsNullOrEmpty(reply2)) reply2 = "[Sem resposta do modelo — nota padrão do painel] A rota rápida é viável, mas devemos isolar as falhas de rede com fallback automático para garantir resiliência total.";
-
-                    AddMeetingTurn("Tático Qwen", "qwen/qwen3.8-27b", "tactician", reply2, Color.FromArgb(60, 150, 255));
-
-                    await Task.Delay(700);
-
-                    // Fase 3: Titã Cerebras (Wafer-Scale) avalia escala e vazão
-                    string prompt3 = "Você é o Titã Cerebras Wafer-Scale na Sala de Reuniões. Em 2 frases, valide como processar em altíssima velocidade e se há risco de estourar limites de cota.";
-                    string reply3 = await QueryModelDirectAsync("oai_cerebras", "gpt-oss-120b", prompt3, _settings.cerebras_api_key, "https://api.cerebras.ai/v1/chat/completions");
-                    if (string.IsNullOrEmpty(reply3)) reply3 = "[Sem resposta do modelo — nota padrão do painel] Acelerador Wafer pronto com capacidade de 2.000 tok/s. Com o controle deslizante de 1h, não há risco de 429.";
-
-                    AddMeetingTurn("Titã Cerebras", "gpt-oss-120b", "titan", reply3, Color.FromArgb(255, 160, 40));
-
-                    await Task.Delay(700);
-
-                    // Fase 4: Mago Gemini (Flash Lite) sintetiza o Consenso Final
-                    string prompt4 = "Você é o Mago Gemini, moderador da Sala de Reuniões. Com base no debate entre Batedor, Tático e Titã, apresente em 2 ou 3 tópicos curtos o CONSENSO FINAL executivo e a melhor ação para dj sobre: \"" + _activeMeetingTopic + "\".";
-                    string reply4 = await QueryModelDirectAsync("gemini", "gemini-flash-lite-latest", prompt4, _settings.api_key, null);
-                    if (string.IsNullOrEmpty(reply4)) reply4 = "[Sem resposta do modelo — nota padrão do painel] CONSENSO: 1. Executar a rota ultrarrápida primária. 2. Ativar guardas de cota no ModelQuotaGuard. 3. Entregar resposta limpa e assertiva.";
-
-                    AddMeetingTurn("Mago Gemini", "gemini-flash-lite-latest", "scholar", reply4, Color.FromArgb(180, 100, 255));
-
-                    _meetingConsensus = reply4;
-                }
-                catch (Exception ex)
-                {
-                    AddMeetingTurn("Moderador Frida", "core", "priestess", "Erro durante a deliberação: " + ex.Message, Color.FromArgb(255, 90, 90));
-                }
-                finally
-                {
-                    _isMeetingRunning = false;
-                    BeginInvoke(new Action(delegate { Invalidate(); }));
-                }
-            });
-        }
-
-        private void AddMeetingTurn(string title, string modelId, string spriteKey, string arg, Color color)
-        {
-            lock (_meetingTranscript)
-            {
-                _meetingTranscript.Add(new MeetingSpeechTurn(title, modelId, spriteKey, arg, color));
-            }
-            BeginInvoke(new Action(delegate
-            {
-                PlayRetroChime();
-                Invalidate();
-            }));
-        }
-
-        private async Task<string> QueryModelDirectAsync(string bucket, string modelId, string userPrompt, string apiKey, string endpoint)
-        {
-            if (string.IsNullOrEmpty(apiKey)) return null;
-
-            try
-            {
-                using (HttpClient client = new HttpClient())
-                {
-                    client.Timeout = TimeSpan.FromSeconds(10);
-                    System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
-
-                    if (bucket == "gemini")
-                    {
-                        string url = "https://generativelanguage.googleapis.com/v1beta/models/" + modelId + ":generateContent?key=" + Uri.EscapeDataString(apiKey);
-                        string payload = "{\"contents\":[{\"parts\":[{\"text\":\"" + EscapeJson(userPrompt) + "\"}]}],\"generationConfig\":{\"maxOutputTokens\":150}}";
-                        using (HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, url))
-                        {
-                            req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
-                            HttpResponseMessage resp = await client.SendAsync(req);
-                            if (resp.IsSuccessStatusCode)
-                            {
-                                string body = await resp.Content.ReadAsStringAsync();
-                                sw.Stop();
-                                ModelQuotaGuard.RecordHttpResponse(bucket, modelId, sw.ElapsedMilliseconds, resp, body);
-                                Dictionary<string, object> root = _json.Deserialize<Dictionary<string, object>>(body);
-                                ArrayList candidates = root != null && root.ContainsKey("candidates") ? root["candidates"] as ArrayList : null;
-                                if (candidates != null && candidates.Count > 0)
-                                {
-                                    Dictionary<string, object> c0 = candidates[0] as Dictionary<string, object>;
-                                    Dictionary<string, object> cont = c0 != null && c0.ContainsKey("content") ? c0["content"] as Dictionary<string, object> : null;
-                                    ArrayList parts = cont != null && cont.ContainsKey("parts") ? cont["parts"] as ArrayList : null;
-                                    if (parts != null && parts.Count > 0)
-                                    {
-                                        Dictionary<string, object> p0 = parts[0] as Dictionary<string, object>;
-                                        if (p0 != null && p0.ContainsKey("text")) return p0["text"].ToString().Trim();
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        string payload = "{\"model\":\"" + modelId + "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + EscapeJson(userPrompt) + "\"}],\"max_completion_tokens\":500" + (modelId.IndexOf("gpt-oss", StringComparison.OrdinalIgnoreCase) >= 0 ? ",\"reasoning_effort\":\"low\"" : "") + "}";
-                        using (HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, endpoint))
-                        {
-                            req.Headers.Add("Authorization", "Bearer " + apiKey);
-                            req.Content = new StringContent(payload, Encoding.UTF8, "application/json");
-                            HttpResponseMessage resp = await client.SendAsync(req);
-                            if (resp.IsSuccessStatusCode)
-                            {
-                                string body = await resp.Content.ReadAsStringAsync();
-                                sw.Stop();
-                                ModelQuotaGuard.RecordHttpResponse(bucket, modelId, sw.ElapsedMilliseconds, resp, body);
-                                Dictionary<string, object> root = _json.Deserialize<Dictionary<string, object>>(body);
-                                ArrayList choices = root != null && root.ContainsKey("choices") ? root["choices"] as ArrayList : null;
-                                if (choices != null && choices.Count > 0)
-                                {
-                                    Dictionary<string, object> ch0 = choices[0] as Dictionary<string, object>;
-                                    Dictionary<string, object> msg = ch0 != null && ch0.ContainsKey("message") ? ch0["message"] as Dictionary<string, object> : null;
-                                    if (msg != null && msg.ContainsKey("content")) return msg["content"].ToString().Trim();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch { }
-            return null;
-        }
-
-        private static string EscapeJson(string s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", " ").Replace("\n", " ");
+            if (_meetingLaunchPending || FridaTeamState.IsMeetingRunning) return;
+            if (_meetingHandler == null) { SetFeedback("O controlador da equipe ainda nao esta disponivel.", 8); return; }
+            string topic = _txtMeetingTopic == null ? _activeMeetingTopic : _txtMeetingTopic.Text.Trim();
+            if (string.IsNullOrWhiteSpace(topic)) { SetFeedback("Informe a solicitacao para planejar e executar.", 8); return; }
+            _meetingLaunchPending = true;
+            try { _meetingConsensus = await _meetingHandler(topic); }
+            catch (Exception) { SetFeedback("A reuniao foi interrompida. Nenhuma conclusao foi confirmada.", 8); }
+            finally { _meetingLaunchPending = false; if (!IsDisposed) { SyncTeamPresentation(); Invalidate(); } }
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -1056,6 +968,9 @@ namespace FridaAgent
             {
                 case DashboardRoom.Overview:
                     DrawOverviewRoom(g, roomViewport);
+                    break;
+                case DashboardRoom.Hall:
+                    DrawHallRoom(g, roomViewport);
                     break;
                 case DashboardRoom.Office:
                     DrawOfficeRoom(g, roomViewport);
@@ -1151,26 +1066,18 @@ namespace FridaAgent
 
         private void DrawRoomTabsBar(Graphics g)
         {
-            List<ModelRuntimeStats> statsList = ModelQuotaGuard.GetAllStats();
-            int countActive = 0;
-            int countIdle = 0;
-            int countCooldown = 0;
-            for (int i = 0; i < statsList.Count; i++)
-            {
-                ModelRuntimeStats s = statsList[i];
-                if (s.IsActiveNow) countActive++;
-                else if (s.IsCooldownActive()) countCooldown++;
-                else countIdle++;
-            }
-
+            List<ModelRuntimeStats> statsList = GetPanelStats();
+            int[] counts = new int[7];
+            foreach (ModelRuntimeStats item in statsList) if (item.TeamLocation.HasValue) counts[(int)item.TeamLocation.Value]++;
             string[] tabLabels = new string[]
             {
-                "[1] Visão Geral",
-                string.Format("[2] Escritório ({0})", countActive),
-                string.Format("[3] Sala de Jogos ({0})", countIdle),
-                string.Format("[4] Dormitório ({0})", countCooldown),
-                "[5] Sala de Reuniões",
-                "[6] Consumo & Histórico"
+                "[1] Visao geral",
+                "[2] Hall (" + counts[1] + ")",
+                "[3] Escritorio (" + counts[2] + ")",
+                "[4] Jogos (" + counts[3] + ")",
+                "[5] Descanso (" + counts[4] + ")",
+                "[6] Reunioes (" + counts[5] + ")",
+                "[7] Consumo e historico"
             };
 
             for (int t = 0; t < _roomTabRects.Length; t++)
@@ -1219,14 +1126,16 @@ namespace FridaAgent
             // Piso de madeira / parquet tecnológico
             DrawParquetFloor(g, r.X, r.Y + 110, r.Width, r.Height - 110);
 
-            // Estações de trabalho (mesas de trabalho com monitores duplos e fios)
-            int deskW = 140;
-            int deskH = 55;
-            for (int i = 0; i < 4; i++)
+            // Baias fixas e individuais para os sete papeis e servicos da equipe.
+            for (int i = 0; i < FridaTeamState.Members.Length; i++)
             {
-                int dx = r.X + 50 + i * 195;
-                int dy = r.Y + 195;
-                DrawOfficeWorkstation(g, dx, dy, deskW, deskH);
+                Point seat = OfficeSeat(i, r);
+                int deskWidth = Math.Max(95, (r.Width - 100) / 4 - 18);
+                DrawOfficeWorkstation(g, seat.X - deskWidth / 2, seat.Y - 48, deskWidth, 50);
+                using (Pen divider = new Pen(Color.FromArgb(80, 120, 150), 3))
+                    g.DrawLine(divider, seat.X + deskWidth / 2 + 8, seat.Y - 70, seat.X + deskWidth / 2 + 8, seat.Y + 75);
+                using (Font label = new Font("Segoe UI", 7.0f, FontStyle.Bold))
+                    g.DrawString(FridaTeamState.Members[i].Name, label, Brushes.LightSteelBlue, seat.X - deskWidth / 2, seat.Y - 77);
             }
 
             // Servidor de Rack lateral piscando LEDs
@@ -1236,16 +1145,16 @@ namespace FridaAgent
             DrawCoffeeStation(g, r.Right - 80, r.Y + 105);
 
             // Mensagem se ninguém estiver trabalhando no exato segundo
-            List<ModelRuntimeStats> statsList = ModelQuotaGuard.GetAllStats();
+            List<ModelRuntimeStats> statsList = GetPanelStats();
             bool hasActive = false;
             for (int i = 0; i < statsList.Count; i++)
             {
-                if (statsList[i].IsActiveNow) { hasActive = true; break; }
+                if (statsList[i].TeamLocation == DashboardRoom.Office) { hasActive = true; break; }
             }
 
             if (!hasActive)
             {
-                Rectangle plaque = new Rectangle(r.X + 170, r.Y + 130, 520, 48);
+                Rectangle plaque = new Rectangle(r.X + 80, r.Y + 112, Math.Min(650, r.Width - 100), 46);
                 using (SolidBrush pBg = new SolidBrush(Color.FromArgb(220, 16, 26, 48)))
                 using (Pen gold = new Pen(Color.FromArgb(218, 165, 32), 2))
                 using (Font pf = new Font("Segoe UI", 9.5f, FontStyle.Bold))
@@ -1253,7 +1162,7 @@ namespace FridaAgent
                 {
                     g.FillRectangle(pBg, plaque);
                     g.DrawRectangle(gold, plaque);
-                    string msg = "Escritorio em Standby: Nenhum modelo em inferencia no exato segundo.\nA equipe de modelos esta descansando ou na Sala de Jogos!";
+                    string msg = "Nenhum trabalho individual em andamento.\nConsulte o hall, os jogos ou a reuniao da equipe.";
                     g.DrawString(msg, pf, pt, plaque.X + 12, plaque.Y + 6);
                 }
             }
@@ -1507,11 +1416,11 @@ namespace FridaAgent
                 g.FillRectangle(floor, r.X, r.Y + 110, r.Width, r.Height - 110);
             }
 
-            // 4 Camas de madeira confortáveis com travesseiros
-            for (int i = 0; i < 4; i++)
+            // Uma cama por membro, em duas fileiras sem sobreposicao.
+            for (int i = 0; i < FridaTeamState.Members.Length; i++)
             {
-                int bx = r.X + 50 + i * 195;
-                int by = r.Y + 180;
+                int bx = r.X + 27 + (i % 4) * ((r.Width - 100) / 4);
+                int by = r.Y + 132 + (i / 4) * 145;
                 DrawCozyBed(g, bx, by);
             }
 
@@ -1519,16 +1428,16 @@ namespace FridaAgent
             DrawCooldownDigitalClock(g, r.X + 80, r.Y + 30);
 
             // Se não há nenhum modelo em cooldown
-            List<ModelRuntimeStats> statsList = ModelQuotaGuard.GetAllStats();
+            List<ModelRuntimeStats> statsList = GetPanelStats();
             bool hasCooldown = false;
             for (int i = 0; i < statsList.Count; i++)
             {
-                if (statsList[i].IsCooldownActive()) { hasCooldown = true; break; }
+                if (statsList[i].TeamLocation == DashboardRoom.BreakRoom) { hasCooldown = true; break; }
             }
 
             if (!hasCooldown)
             {
-                Rectangle plaque = new Rectangle(r.X + 170, r.Y + 130, 520, 48);
+                Rectangle plaque = new Rectangle(r.X + 80, r.Y + 112, Math.Min(650, r.Width - 100), 46);
                 using (SolidBrush pBg = new SolidBrush(Color.FromArgb(220, 16, 26, 48)))
                 using (Pen gold = new Pen(Color.FromArgb(80, 200, 120), 2))
                 using (Font pf = new Font("Segoe UI", 9.5f, FontStyle.Bold))
@@ -1536,7 +1445,7 @@ namespace FridaAgent
                 {
                     g.FillRectangle(pBg, plaque);
                     g.DrawRectangle(gold, plaque);
-                    string msg = "Dormitorio Tranquilo: Nenhuma cota excedida hoje!\nTodos os modelos estao 100% descansados e com energia total.";
+                    string msg = "Nenhum bloqueio de cota ativo no momento.\nFalhas de rede e outros erros nao sao tratados como cota excedida.";
                     g.DrawString(msg, pf, pt, plaque.X + 12, plaque.Y + 6);
                 }
             }
@@ -1608,7 +1517,7 @@ namespace FridaAgent
                 g.DrawRectangle(p, x, y, 190, 42);
                 g.DrawString("ALARME DE COOLDOWN", new Font("Segoe UI", 6.5f, FontStyle.Bold), text, x + 8, y + 3);
 
-                List<ModelRuntimeStats> statsList = ModelQuotaGuard.GetAllStats();
+                List<ModelRuntimeStats> statsList = GetPanelStats();
                 TimeSpan maxCooldown = TimeSpan.Zero;
                 for (int i = 0; i < statsList.Count; i++)
                 {
@@ -1712,9 +1621,9 @@ namespace FridaAgent
 
                 using (Font itemF = new Font("Segoe UI", 6.5f))
                 {
-                    g.DrawString("• Proposta (Batedor Groq)", itemF, text, x + 8, y + 24);
-                    g.DrawString("• Auditoria (Tático Qwen)", itemF, text, x + 8, y + 38);
-                    g.DrawString("• Síntese (Mago Gemini)", itemF, text, x + 8, y + 52);
+                    g.DrawString("Gestor: planejar e delegar", itemF, text, x + 8, y + 24);
+                    g.DrawString("Tecnico + analista + apoio", itemF, text, x + 8, y + 38);
+                    g.DrawString("Frida: relatar resultados", itemF, text, x + 8, y + 52);
                 }
             }
         }
@@ -1722,48 +1631,36 @@ namespace FridaAgent
         // =========================================================================
         // SALA 5: VISÃO GERAL (Planta 2x2 com todas as salas interligadas)
         // =========================================================================
+        private Rectangle OverviewZone(DashboardRoom room, Rectangle r)
+        {
+            int index = room == DashboardRoom.Hall ? 0 : room == DashboardRoom.Office ? 1 : room == DashboardRoom.GameRoom ? 2 : room == DashboardRoom.BreakRoom ? 3 : 4;
+            return new Rectangle(r.X + (index % 3) * r.Width / 3 + 2, r.Y + (index / 3) * r.Height / 2 + 2, r.Width / 3 - 4, r.Height / 2 - 4);
+        }
+
+        private void DrawHallRoom(Graphics g, Rectangle r)
+        {
+            using (SolidBrush wall = new SolidBrush(Color.FromArgb(26, 49, 60))) g.FillRectangle(wall, r);
+            DrawParquetFloor(g, r.X, r.Y + 105, r.Width, r.Height - 105);
+            DrawExecutiveWindow(g, r.X + 30, r.Y + 15, 160, 65);
+            DrawExecutiveWindow(g, r.Right - 200, r.Y + 15, 160, 65);
+            using (SolidBrush rug = new SolidBrush(Color.FromArgb(30, 92, 85))) g.FillRectangle(rug, r.X + 35, r.Y + 120, r.Width - 70, r.Height - 150);
+            using (Font title = new Font("Segoe UI", 14, FontStyle.Bold)) g.DrawString("HALL DA EQUIPE", title, Brushes.PaleGoldenrod, r.X + r.Width / 2 - 90, r.Y + 35);
+            using (Font text = new Font("Segoe UI", 9)) g.DrawString("Prontos para receber trabalho. Apos 2 minutos ociosos, seguem para os jogos.", text, Brushes.LightCyan, r.X + 30, r.Bottom - 25);
+        }
+
         private void DrawOverviewRoom(Graphics g, Rectangle r)
         {
-            int midX = r.X + r.Width / 2;
-            int midY = r.Y + r.Height / 2;
-
-            Rectangle qOffice = new Rectangle(r.X, r.Y, r.Width / 2 - 2, r.Height / 2 - 2);
-            Rectangle qGame = new Rectangle(midX + 2, r.Y, r.Width / 2 - 2, r.Height / 2 - 2);
-            Rectangle qBreak = new Rectangle(r.X, midY + 2, r.Width / 2 - 2, r.Height / 2 - 2);
-            Rectangle qMeeting = new Rectangle(midX + 2, midY + 2, r.Width / 2 - 2, r.Height / 2 - 2);
-
-            // Desenha os 4 quadrantes, cada um recortado na propria area (a arte e feita para a sala inteira
-            // e antes transbordava por cima dos outros quadrantes, do HUD e do painel lateral)
-            Region previousClip = g.Clip;
-            g.SetClip(qOffice); DrawOfficeRoom(g, qOffice);
-            g.SetClip(qGame); DrawGameRoom(g, qGame);
-            g.SetClip(qBreak); DrawBreakRoom(g, qBreak);
-            g.SetClip(qMeeting); DrawMeetingRoom(g, qMeeting);
-            g.Clip = previousClip;
-
-            // Rótulos dos Quadrantes
-            using (Font qFont = new Font("Segoe UI", 8.0f, FontStyle.Bold))
-            using (SolidBrush qBg = new SolidBrush(Color.FromArgb(210, 10, 15, 30)))
-            using (SolidBrush qText = new SolidBrush(Color.FromArgb(255, 230, 120)))
+            string[] names = new string[] { "HALL / PRONTIDAO", "ESCRITORIO / BAIAS", "JOGOS / OCIOSOS", "DESCANSO / COTA", "REUNIAO / EQUIPE" };
+            DashboardRoom[] rooms = new DashboardRoom[] {DashboardRoom.Hall, DashboardRoom.Office, DashboardRoom.GameRoom, DashboardRoom.BreakRoom, DashboardRoom.MeetingRoom};
+            for (int i = 0; i < rooms.Length; i++)
             {
-                DrawBadge(g, qOffice.X + 8, qOffice.Y + 8, "1. ESCRITÓRIO (EM USO)", qFont, qBg, qText);
-                DrawBadge(g, qGame.X + 8, qGame.Y + 8, "2. SALA DE JOGOS (STANDBY)", qFont, qBg, qText);
-                DrawBadge(g, qBreak.X + 8, qBreak.Y + 8, "3. DORMITÓRIO (COTA / COCHILO)", qFont, qBg, qText);
-                DrawBadge(g, qMeeting.X + 8, qMeeting.Y + 8, "4. SALA DE REUNIÕES (CONCLAVE)", qFont, qBg, qText);
+                Rectangle zone = OverviewZone(rooms[i], r);
+                using (SolidBrush fill = new SolidBrush(Color.FromArgb(22 + i * 4, 34 + i * 3, 52 + i * 3))) g.FillRectangle(fill, zone);
+                using (Pen border = new Pen(Color.FromArgb(110, 140, 160), 2)) g.DrawRectangle(border, zone);
+                using (Font font = new Font("Segoe UI", 8, FontStyle.Bold)) g.DrawString(names[i], font, Brushes.PaleGoldenrod, zone.X + 8, zone.Y + 10);
             }
-
-            // Portas e paredes divisórias
-            using (Pen divPen = new Pen(Color.FromArgb(218, 165, 32), 3))
-            {
-                g.DrawLine(divPen, midX, r.Y, midX, r.Bottom);
-                g.DrawLine(divPen, r.X, midY, r.Right, midY);
-            }
-
-            // Porta aberta no centro
-            using (SolidBrush door = new SolidBrush(Color.FromArgb(14, 20, 36)))
-            {
-                g.FillRectangle(door, midX - 25, midY - 14, 50, 28);
-            }
+            Rectangle legend = new Rectangle(r.X + 2 * r.Width / 3 + 10, r.Y + r.Height / 2 + 10, r.Width / 3 - 20, r.Height / 2 - 20);
+            using (Font font = new Font("Segoe UI", 9)) g.DrawString("GESTOR delega ao TECNICO\nANALISTA verifica os resultados\nASSISTENTE apoia a pesquisa\nSECRETARIA FRIDA fala ao usuario\n\nPosicoes refletem atividades reais.", font, Brushes.LightSteelBlue, legend);
         }
 
         private void DrawBadge(Graphics g, int x, int y, string text, Font f, Brush bg, Brush textB)
@@ -1779,7 +1676,7 @@ namespace FridaAgent
 
         private void DrawCharactersForCurrentRoom(Graphics g)
         {
-            List<ModelRuntimeStats> statsList = ModelQuotaGuard.GetAllStats();
+            List<ModelRuntimeStats> statsList = GetPanelStats();
 
             for (int i = 0; i < _characterSlots.Length; i++)
             {
@@ -1793,6 +1690,17 @@ namespace FridaAgent
 
                 int cx = (a != null) ? (int)a.CurrX : (slot.X + slot.Width / 2);
                 int cy = (a != null) ? (int)a.CurrY : slot.Y;
+
+                if (_currentRoom == DashboardRoom.Overview)
+                {
+                    System.Drawing.Drawing2D.GraphicsState miniState = g.Save();
+                    g.TranslateTransform(cx - 16, cy);
+                    g.ScaleTransform(0.5f, 0.5f);
+                    DrawPixelCharacterSprite(g, 0, 0, s.SpriteKey, false, isSelected, 0, 0, false);
+                    g.Restore(miniState);
+                    DrawCharacterMiniTag(g, cx, cy + 34, s, isSelected);
+                    continue;
+                }
 
                 // Sombra suave sob os pés do personagem
                 using (SolidBrush shadowB = new SolidBrush(Color.FromArgb(90, 0, 0, 0)))
@@ -1875,7 +1783,7 @@ namespace FridaAgent
                     using (Font hintF = new Font("Segoe UI", 9.0f, FontStyle.Italic))
                     using (SolidBrush hintB = new SolidBrush(Color.FromArgb(160, 180, 210)))
                     {
-                        string msg = "A Sala de Reuniões está pronta. Digite qualquer pauta acima ou clique em [Iniciar Reunião].\nOs modelos (Groq 120B, Qwen 27B, Cerebras e Gemini) debaterão em rodadas sucessivas para definir a melhor solução para você!";
+                        string msg = "A Sala de Reuniões está pronta. Digite qualquer pauta acima ou clique em [Iniciar Reunião].\nGestor, tecnico, analista e assistente trabalham com evidencias reais. A secretaria Frida apresenta o resultado em uma unica voz.";
                         g.DrawString(msg, hintF, hintB, logBox.X + 14, logBox.Y + 36);
                     }
                 }
@@ -2267,8 +2175,8 @@ namespace FridaAgent
             float floatY = (float)Math.Sin((_animTick + cx) * 0.12f) * 4f;
             int gy = cy + (int)floatY;
 
-            bool isCooldown = stats.IsCooldownActive();
-            bool isActive = stats.IsActiveNow;
+            bool isCooldown = stats.TeamLocation == DashboardRoom.BreakRoom;
+            bool isActive = stats.IsActiveNow && stats.TeamLocation != DashboardRoom.BreakRoom;
 
             Color gemCore;
             Color gemGlow;
@@ -2278,7 +2186,7 @@ namespace FridaAgent
             {
                 gemCore = Color.FromArgb(0, 240, 100);
                 gemGlow = Color.FromArgb(120, 0, 255, 120);
-                statusBadge = "EM USO";
+                statusBadge = stats.TeamLocation == DashboardRoom.MeetingRoom ? "EM REUNIAO" : "TRABALHANDO";
             }
             else if (isCooldown)
             {
@@ -2290,7 +2198,7 @@ namespace FridaAgent
             {
                 gemCore = Color.FromArgb(255, 200, 30);
                 gemGlow = Color.FromArgb(90, 255, 215, 0);
-                statusBadge = "PRONTO";
+                statusBadge = stats.TeamLocation == DashboardRoom.MeetingRoom ? "EM REUNIAO" : stats.TeamLocation == DashboardRoom.GameRoom ? "OCIOSO" : "PRONTO";
             }
 
             using (SolidBrush aura = new SolidBrush(gemGlow))

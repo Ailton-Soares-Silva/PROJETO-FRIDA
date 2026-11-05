@@ -1,4 +1,4 @@
-// language: C# 5 (.NET Framework 4.8), file: HologramOrbForm.cs, target: Windows 10/11 x64
+﻿// language: C# 5 (.NET Framework 4.8), file: HologramOrbForm.cs, target: Windows 10/11 x64
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -235,8 +235,16 @@ namespace FridaAgent
             }
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if(!FridaShutdown.IsShuttingDown && e.CloseReason==CloseReason.UserClosing){e.Cancel=true;SetActivityState(OrbActivityState.Hidden,"FRIDA","");}
+            base.OnFormClosing(e);
+        }
+
         public void SetActivityState(OrbActivityState state, string statusTitle, string subtitle)
         {
+            if(IsDisposed || Disposing)return;
+            FridaRuntimeHealth.State(state==OrbActivityState.Hidden?"inativa":state==OrbActivityState.Listening || state==OrbActivityState.FollowUp?"ouvindo":state==OrbActivityState.Thinking?"processando":state==OrbActivityState.Executing?"executando":"falando",statusTitle);
             if (InvokeRequired)
             {
                 BeginInvoke(new Action(delegate { SetActivityState(state, statusTitle, subtitle); }));

@@ -1,4 +1,4 @@
-// language: C# 5 (.NET Framework 4.8), file: ZeldaConsumptionViews.cs, target: Windows 10/11 x64
+﻿// language: C# 5 (.NET Framework 4.8), file: ZeldaConsumptionViews.cs, target: Windows 10/11 x64
 // Visoes de consumo real do painel Zelda: lateral "Consumo ao vivo", HUD de telemetria,
 // sala "Consumo & Historico", botoes de gerenciamento e teste real de modelo.
 using System;
@@ -49,7 +49,7 @@ namespace FridaAgent
 
         private void SelectByIndex(int index)
         {
-            List<ModelRuntimeStats> list = ModelQuotaGuard.GetAllStats();
+            List<ModelRuntimeStats> list = GetPanelStats();
             if (index < 0 || index >= list.Count) return;
             _selectedCharIndex = index;
             _selectedKey = list[index].Key;
@@ -57,7 +57,7 @@ namespace FridaAgent
 
         private ModelRuntimeStats SelectedStats()
         {
-            List<ModelRuntimeStats> list = ModelQuotaGuard.GetAllStats();
+            List<ModelRuntimeStats> list = GetPanelStats();
             SyncSelectionWithKey(list);
             return (_selectedCharIndex >= 0 && _selectedCharIndex < list.Count) ? list[_selectedCharIndex] : null;
         }
@@ -92,7 +92,7 @@ namespace FridaAgent
             {
                 if (!_panelRows[i].Key.Contains(p)) continue;
                 _selectedKey = _panelRows[i].Value;
-                SyncSelectionWithKey(ModelQuotaGuard.GetAllStats());
+                SyncSelectionWithKey(GetPanelStats());
                 if (_currentRoom == DashboardRoom.Consumption || _currentRoom == DashboardRoom.MeetingRoom) SwitchRoom(DashboardRoom.Overview);
                 _testFeedbackMessage = "";
                 PlayRetroChime();
@@ -264,23 +264,52 @@ namespace FridaAgent
 
         private static string StateText(ModelRuntimeStats s)
         {
+            if (!string.IsNullOrEmpty(s.TeamRoleId))
+            {
+                if (s.IsDisabled) return "DESATIVADO PELO OPERADOR";
+                if (s.TeamLocation == DashboardRoom.BreakRoom) return "COTA EXCEDIDA · volta em " + Span(s.GetCooldownRemaining());
+                if (!s.TeamLocation.HasValue) return "TEMPORARIAMENTE INDISPONIVEL";
+                if (s.TeamLocation == DashboardRoom.GameRoom) return "OCIOSO HA PELO MENOS 2 MINUTOS";
+                if (s.TeamLocation == DashboardRoom.MeetingRoom) return "EM REUNIAO · " + s.TeamStage;
+                if (s.TeamLocation == DashboardRoom.Office) return "TRABALHANDO · " + s.TeamStage;
+                return "DISPONIVEL NO HALL";
+            }
             if (s.IsActiveNow) return "EM USO AGORA";
             if (s.IsDisabled) return "DESATIVADO PELO OPERADOR";
             if (s.IsCooldownActive()) return "SEM COTA · libera em " + Span(s.GetCooldownRemaining());
             return "PRONTO PARA USO";
         }
 
-        /// <summary>Cota diaria usada (0..1). known=false quando o provedor nao informa o limite.</summary>
+        /// <summary>Fracao do limite mais apertado entre todas as janelas (0..1). known=false quando nenhum limite e conhecido.</summary>
         private static double DailyUse(ModelRuntimeStats s, out bool known)
         {
-            long rem, lim;
-            if (s.TryGetDailyRequestQuota(out rem, out lim))
-            {
-                known = true;
-                return Math.Max(0, Math.Min(1, (lim - rem) / (double)lim));
-            }
+            UsageLimitLine peak = s.PeakLimitLine();
+            if (peak != null) { known = true; return s.IsCooldownActive() ? 1.0 : peak.Fraction; }
             known = s.IsCooldownActive();
             return known ? 1.0 : 0.0;
+        }
+
+        /// <summary>Numero curto para celulas estreitas: 950 · 12,4 mil · 1,2 mi.</summary>
+        private static string Compact(long v)
+        {
+            if (v >= 1000000) return (v / 1000000.0).ToString(v >= 10000000 ? "0" : "0.#", Br) + " mi";
+            if (v >= 10000) return (v / 1000.0).ToString(v >= 100000 ? "0" : "0.#", Br) + " mil";
+            return Num(v);
+        }
+
+        private static Color FracColor(double frac)
+        {
+            return frac >= 0.9 ? Color.FromArgb(240, 70, 70) : frac >= 0.6 ? Color.FromArgb(245, 185, 45) : Color.FromArgb(60, 210, 115);
+        }
+
+        private static string LimitSourceText(ModelRuntimeStats s, List<UsageLimitLine> lines)
+        {
+            bool api = false, cfg = false;
+            foreach (UsageLimitLine l in lines) { if (l.Source == "API") api = true; else if (l.Source == "config") cfg = true; }
+            if (api) return "limites da API · lidos " + Ago(s.RateLimitsAtLocal) + (cfg ? " · + config" : "");
+            if (cfg) return "limites do config (model_limits) · uso contado localmente";
+            if ((s.Bucket ?? "") == "tts_edge") return "serviço gratuito sem cota publicada · uso contado localmente";
+            return "provedor não informa limites · uso contado localmente";
         }
 
         private static void FillBar(Graphics g, Rectangle r, double frac, bool known)
@@ -321,7 +350,14 @@ namespace FridaAgent
         private void DrawCharacterMiniTag(Graphics g, int cx, int cy, ModelRuntimeStats stats, bool isSelected)
         {
             if (stats == null) return;
-            string label = TruncateText(ShortName(stats.ModelId), 18);
+            string label = TruncateText(string.IsNullOrEmpty(stats.TeamRoleId) ? ShortName(stats.ModelId) : stats.CharacterTitle, _currentRoom == DashboardRoom.Overview ? 14 : 24);
+            if (_currentRoom == DashboardRoom.Overview && !string.IsNullOrEmpty(stats.TeamRoleId))
+            {
+                string[] roles = { "Secretary", "Manager", "Technician", "Analyst", "Assistant", "Hearing", "Voice" };
+                string[] names = { "Secretaria", "Gestor", "Tecnico", "Analista", "Assistente", "Escuta", "Voz" };
+                int index = Array.IndexOf(roles, stats.TeamRoleId);
+                if (index >= 0) label = names[index];
+            }
             using (Font f = new Font("Segoe UI", 7.5f, FontStyle.Bold))
             {
                 SizeF sz = g.MeasureString(label, f);
@@ -344,14 +380,14 @@ namespace FridaAgent
         {
             Rectangle r = SidePanelRect;
             DrawFramedPanel(g, r);
-            List<ModelRuntimeStats> list = ModelQuotaGuard.GetAllStats();
+            List<ModelRuntimeStats> list = GetPanelStats();
             SyncSelectionWithKey(list);
 
             using (Font head = new Font("Segoe UI", 10f, FontStyle.Bold))
             using (Font hint = new Font("Segoe UI", 7.5f))
             {
-                Txt(g, "CONSUMO AO VIVO · HOJE", head, Color.FromArgb(255, 223, 118), new RectangleF(r.X + 14, r.Y + 10, r.Width - 28, 20));
-                Txt(g, list.Count + " modelos · clique p/ selecionar · roda do mouse rola", hint, Color.FromArgb(145, 170, 205), new RectangleF(r.X + 14, r.Y + 30, r.Width - 28, 16));
+                Txt(g, _currentRoom == DashboardRoom.Consumption ? "CONSUMO AO VIVO · HOJE" : "EQUIPE E SERVICOS · AO VIVO", head, Color.FromArgb(255, 223, 118), new RectangleF(r.X + 14, r.Y + 10, r.Width - 28, 20));
+                Txt(g, "Clique para selecionar. Consumo por modelo na aba [7].", hint, Color.FromArgb(145, 170, 205), new RectangleF(r.X + 14, r.Y + 30, r.Width - 28, 16));
             }
 
             _panelRows.Clear();
@@ -379,9 +415,9 @@ namespace FridaAgent
                     using (SolidBrush dot = new SolidBrush(sc)) g.FillEllipse(dot, rr.X + 6, rr.Y + 8, 9, 9);
 
                     int rightW = 92;
-                    Txt(g, ShortName(s.ModelId), nameF, s.IsDisabled ? Color.FromArgb(140, 145, 160) : Color.White,
+                    Txt(g, (string.IsNullOrEmpty(s.TeamRoleId) ? ShortName(s.ModelId) : s.CharacterTitle), nameF, s.IsDisabled ? Color.FromArgb(140, 145, 160) : Color.White,
                         new RectangleF(rr.X + 20, rr.Y + 3, rr.Width - rightW - 24, 16));
-                    Txt(g, s.ProviderLabel + " · " + s.FunctionLabel, smallF, Color.FromArgb(145, 172, 210),
+                    Txt(g, string.IsNullOrEmpty(s.TeamRoleId) ? s.ProviderLabel + " · " + s.FunctionLabel : StateText(s), smallF, Color.FromArgb(145, 172, 210),
                         new RectangleF(rr.X + 20, rr.Y + 18, rr.Width - rightW - 24, 14));
 
                     using (StringFormat right = new StringFormat(StringFormatFlags.NoWrap))
@@ -390,9 +426,16 @@ namespace FridaAgent
                     {
                         right.Alignment = StringAlignment.Far;
                         g.DrawString(Num(s.TotalRequestsToday) + " req", nameF, vb, new RectangleF(rr.Right - rightW - 4, rr.Y + 3, rightW, 16), right);
+                        // Prioridade: sem cota > janela mais perto do limite > falhas > tokens do dia
+                        UsageLimitLine peak = s.PeakLimitLine();
                         string sub = s.IsCooldownActive() ? "volta " + Span(s.GetCooldownRemaining())
-                                   : (s.FailuresToday > 0 ? Num(s.FailuresToday) + " falhas" : Num(s.TokensInToday + s.TokensOutToday) + " tok");
-                        g.DrawString(sub, smallF, s.IsCooldownActive() || s.FailuresToday > 0 ? fb : vb, new RectangleF(rr.Right - rightW - 4, rr.Y + 18, rightW, 14), right);
+                                   : peak != null ? string.Format("{0} {1:0}%", peak.Label, peak.Fraction * 100)
+                                   : s.FailuresToday > 0 ? Num(s.FailuresToday) + " falhas"
+                                   : s.Bucket == "tts_edge" ? "grátis"
+                                   : Compact(s.TokensInToday + s.TokensOutToday) + " tok";
+                        using (SolidBrush pb = new SolidBrush(peak != null && !s.IsCooldownActive() ? FracColor(peak.Fraction) : Color.White))
+                            g.DrawString(sub, smallF, s.IsCooldownActive() || (peak == null && s.FailuresToday > 0) ? fb : peak != null ? pb : vb,
+                                new RectangleF(rr.Right - rightW - 4, rr.Y + 18, rightW, 14), right);
                     }
 
                     bool known;
@@ -448,67 +491,73 @@ namespace FridaAgent
             using (Font monoF = new Font("Consolas", 9f))
             using (Font stF = new Font("Segoe UI", 9f, FontStyle.Bold))
             {
-                Txt(g, s.FunctionLabel + " · " + s.ProviderLabel, titleF, Color.FromArgb(255, 225, 110), new RectangleF(x, hud.Y + 12, w, 22));
+                Txt(g, (string.IsNullOrEmpty(s.TeamRoleId) ? s.FunctionLabel : s.CharacterTitle) + " · " + s.ProviderLabel, titleF, Color.FromArgb(255, 225, 110), new RectangleF(x, hud.Y + 12, w, 22));
                 Txt(g, s.ModelId, monoF, Color.FromArgb(165, 205, 240), new RectangleF(x, hud.Y + 34, w, 16));
                 Color sc = StateColor(s);
                 using (SolidBrush dot = new SolidBrush(sc)) g.FillEllipse(dot, x, hud.Y + 57, 9, 9);
-                Txt(g, StateText(s), stF, sc, new RectangleF(x + 14, hud.Y + 53, w - 14, 18));
+                Txt(g, StateText(s), stF, sc, new RectangleF(x + 14, hud.Y + 53, (w - 12) / 2 - 14, 18));
             }
 
-            // Duas colunas de metricas reais
+            // Esquerda: metricas reais do dia. Direita: limite x uso atual por janela.
             int colW = (w - 12) / 2;
+            int x2 = x + colW + 12;
             int y = hud.Y + 80;
             const int lh = 21;
             string[][] left = new string[][]
             {
                 new string[] { "Hoje", string.Format("{0} ok · {1} falhas · {2} bloqueios 429", Num(s.TotalRequestsToday), Num(s.FailuresToday), Num(s.RateLimitedToday)) },
                 new string[] { "Tokens hoje", string.Format("{0} entrada · {1} saída", Num(s.TokensInToday), Num(s.TokensOutToday)) },
-                new string[] { "Última hora", s.GetRequestsInLastHour() + " requisições" },
+                new string[] { "Acumulado", string.Format("{0} req · {1} tokens", Num(s.TotalRequestsAllTime), Num(s.TokensInAllTime + s.TokensOutAllTime)) },
                 new string[] { "Latência", s.LastLatencyMs > 0 ? string.Format("{0:0} ms (média {1:0} ms)", s.LastLatencyMs, s.AvgLatencyMs) : "—" },
                 new string[] { "Último uso", Ago(s.LastUsedLocal) }
             };
-            string limits = s.DescribeProviderLimits();
-            string[][] right = new string[][]
-            {
-                new string[] { "Acumulado", string.Format("{0} req · {1} tokens", Num(s.TotalRequestsAllTime), Num(s.TokensInAllTime + s.TokensOutAllTime)) },
-                new string[] { "Cota diária", s.DailyQuotaDesc },
-                new string[] { "Uso da cota", "" },
-                new string[] { "Limites reais", limits.Length > 0 ? limits : (s.ProviderLimitNote.Length > 0 ? s.ProviderLimitNote : "provedor não informa") },
-                new string[] { "Lidos em", s.RateLimitsAtLocal == DateTime.MinValue ? "—" : Ago(s.RateLimitsAtLocal) }
-            };
 
+            List<UsageLimitLine> lines = s.GetLimitLines();
             using (Font lf = new Font("Segoe UI", 8.75f))
             using (Font vf = new Font("Segoe UI", 8.75f, FontStyle.Bold))
+            using (Font hf = new Font("Segoe UI", 8f, FontStyle.Bold))
+            using (Font sf = new Font("Segoe UI", 7.25f))
             {
                 for (int i = 0; i < left.Length; i++)
                 {
                     Txt(g, left[i][0] + ":", lf, Color.FromArgb(145, 172, 210), new RectangleF(x, y + i * lh, 90, 18));
                     Txt(g, left[i][1], vf, Color.White, new RectangleF(x + 90, y + i * lh, colW - 92, 18));
-                    int x2 = x + colW + 12;
-                    Txt(g, right[i][0] + ":", lf, Color.FromArgb(145, 172, 210), new RectangleF(x2, y + i * lh, 90, 18));
-                    if (i == 2)
+                }
+
+                Txt(g, "LIMITE × USO ATUAL", hf, Color.FromArgb(255, 223, 118), new RectangleF(x2, hud.Y + 54, 128, 16));
+                Txt(g, s.QuotaRefreshPending ? "aguardando nova resposta da API" : LimitSourceText(s, lines), sf, Color.FromArgb(145, 172, 210),
+                    new RectangleF(x2 + 128, hud.Y + 56, colW - 128, 14));
+
+                const int lr = 17;
+                int ly = y - 6;
+                int maxRows = Math.Min(lines.Count, 7);
+                for (int i = 0; i < maxRows; i++)
+                {
+                    UsageLimitLine l = lines[i];
+                    int ry = ly + i * lr;
+                    Txt(g, l.Label, lf, Color.FromArgb(145, 172, 210), new RectangleF(x2, ry, 74, 16));
+                    FillBar(g, new Rectangle(x2 + 76, ry + 4, colW - 76 - 132, 9), l.Fraction, l.HasLimit);
+                    string val = l.HasLimit
+                        ? string.Format("{0} / {1}  {2:0}%", Compact(l.Used), Compact(l.Limit), l.Fraction * 100)
+                        : Compact(l.Used) + " · sem limite";
+                    using (StringFormat rf = new StringFormat(StringFormatFlags.NoWrap))
+                    using (SolidBrush vb = new SolidBrush(l.HasLimit ? (l.Fraction >= 0.6 ? FracColor(l.Fraction) : Color.White) : Color.FromArgb(170, 180, 200)))
                     {
-                        bool known;
-                        double frac = DailyUse(s, out known);
-                        FillBar(g, new Rectangle(x2 + 90, y + i * lh + 4, colW - 140, 11), frac, known);
-                        Txt(g, known ? string.Format("{0:0}%", frac * 100) : "?", vf, Color.White, new RectangleF(x2 + colW - 46, y + i * lh, 46, 18));
-                    }
-                    else
-                    {
-                        Txt(g, right[i][1], vf, Color.White, new RectangleF(x2 + 90, y + i * lh, colW - 92, 18));
+                        rf.Alignment = StringAlignment.Far;
+                        g.DrawString(val, vf, vb, new RectangleF(x2 + colW - 130, ry, 130, 16), rf);
                     }
                 }
 
                 if (!string.IsNullOrEmpty(s.LastErrorReason))
                 {
                     using (SolidBrush eb = new SolidBrush(Color.FromArgb(255, 150, 140)))
-                        g.DrawString("Último erro (" + Ago(s.LastErrorLocal) + "): " + TruncateText(s.LastErrorReason, 200), lf, eb,
-                            new RectangleF(x, y + lh * 5 + 4, w, 32));
+                        g.DrawString("Último erro (" + Ago(s.LastErrorLocal) + "): " + TruncateText(s.LastErrorReason, 140), lf, eb,
+                            new RectangleF(x, y + lh * 5 + 2, colW, 30));
                 }
             }
 
             DrawZeldaButton(g, _btnTestRect, _isTestingNow ? "Testando..." : "[►] Testar de Verdade", _isHoveringTestBtn, Color.FromArgb(30, 80, 150));
-            DrawZeldaButton(g, _btnResetCooldownRect, "[↺] Liberar Bloqueio", _isHoveringResetBtn, Color.FromArgb(140, 60, 30));
+            DrawZeldaButton(g, _btnResetCooldownRect, "[↻] Atualizar Cota", _isHoveringResetBtn, Color.FromArgb(140, 60, 30));
             DrawZeldaButton(g, _btnSetDefaultRect, rank == int.MaxValue ? "[★] Tornar Preferido" : "[☆] Tirar Preferência", _isHoveringDefaultBtn, Color.FromArgb(100, 80, 20));
             DrawZeldaButton(g, _btnToggleEnabledRect, s.IsDisabled ? "[✓] Ativar" : "[✕] Desativar", _isHoveringToggleBtn, s.IsDisabled ? Color.FromArgb(30, 110, 60) : Color.FromArgb(110, 35, 45));
             DrawZeldaButton(g, _btnResetTodayRect, "[0] Zerar Hoje", _isHoveringResetTodayBtn, Color.FromArgb(60, 60, 95));
@@ -539,6 +588,75 @@ namespace FridaAgent
         }
 
         // ------------------------------------------------------------------
+        // Tabela: limite x uso atual de todos os modelos (min / hora / dia)
+        // ------------------------------------------------------------------
+        private void DrawLimitsTable(Graphics g, Rectangle p, List<ModelRuntimeStats> list, int rows, int rowH)
+        {
+            Color gold = Color.FromArgb(255, 223, 118);
+            Color dim = Color.FromArgb(145, 172, 210);
+            string[] codes = { "rpm", "rph", "rpd", "tpm", "tph", "tpd" };
+            string[] heads = { "Req/min", "Req/hora", "Req/dia", "Tokens/min", "Tokens/hora", "Tokens/dia" };
+            const int modelW = 250, srcW = 92;
+            int colW = (p.Width - 32 - modelW - srcW) / codes.Length;
+
+            using (Font head = new Font("Segoe UI", 10f, FontStyle.Bold))
+            using (Font small = new Font("Segoe UI", 7.5f))
+            using (Font cell = new Font("Segoe UI", 8.25f))
+            using (Font cellB = new Font("Segoe UI", 8.25f, FontStyle.Bold))
+            using (StringFormat center = new StringFormat(StringFormatFlags.NoWrap))
+            {
+                center.Alignment = StringAlignment.Center;
+                center.Trimming = StringTrimming.EllipsisCharacter;
+                Txt(g, "LIMITE × USO ATUAL · uso / limite por janela", head, gold, new RectangleF(p.X + 16, p.Y + 10, 520, 20));
+                Txt(g, "Verde < 60% · amarelo < 90% · vermelho ≥ 90% · \"—\" = provedor não informa (defina em model_limits no config)", small, dim,
+                    new RectangleF(p.X + 380, p.Y + 13, p.Width - 396, 14));
+
+                int hy = p.Y + 34;
+                Txt(g, "Modelo", small, dim, new RectangleF(p.X + 16, hy, modelW, 14));
+                using (SolidBrush hb = new SolidBrush(dim))
+                    for (int i = 0; i < heads.Length; i++)
+                        g.DrawString(heads[i], small, hb, new RectangleF(p.X + 16 + modelW + i * colW, hy, colW, 14), center);
+                Txt(g, "Fonte", small, dim, new RectangleF(p.Right - 16 - srcW, hy, srcW, 14));
+
+                if (list.Count == 0)
+                {
+                    Txt(g, "Nenhum modelo com chave configurada.", cell, dim, new RectangleF(p.X + 16, hy + 18, 400, 18));
+                    return;
+                }
+
+                for (int r = 0; r < rows && r < list.Count; r++)
+                {
+                    ModelRuntimeStats s = list[r];
+                    int ry = hy + 18 + r * rowH;
+                    if (r % 2 == 1) using (SolidBrush zb = new SolidBrush(Color.FromArgb(18, 28, 50))) g.FillRectangle(zb, p.X + 10, ry - 1, p.Width - 20, rowH);
+                    using (SolidBrush dot = new SolidBrush(StateColor(s))) g.FillEllipse(dot, p.X + 16, ry + 5, 7, 7);
+                    Txt(g, s.ProviderLabel + " · " + ShortName(s.ModelId), cellB, s.IsDisabled ? Color.FromArgb(140, 145, 160) : Color.White,
+                        new RectangleF(p.X + 28, ry, modelW - 14, 16));
+
+                    List<UsageLimitLine> lines = s.GetLimitLines();
+                    bool api = false, cfg = false;
+                    for (int i = 0; i < codes.Length; i++)
+                    {
+                        UsageLimitLine line = null;
+                        foreach (UsageLimitLine x in lines) if (x.Code == codes[i]) { line = x; break; }
+                        if (line == null) continue;
+                        if (line.Source == "API") api = true; else if (line.Source == "config") cfg = true;
+                        RectangleF cr = new RectangleF(p.X + 16 + modelW + i * colW, ry, colW, 16);
+                        string txt = Compact(line.Used) + " / " + (line.HasLimit ? Compact(line.Limit) : "—");
+                        Color tc = line.HasLimit ? (line.Fraction >= 0.6 ? FracColor(line.Fraction) : Color.White) : Color.FromArgb(120, 135, 160);
+                        using (SolidBrush tb = new SolidBrush(tc)) g.DrawString(txt, line.HasLimit ? cellB : cell, tb, cr, center);
+                        if (line.HasLimit)
+                            FillBar(g, new Rectangle((int)cr.X + 10, ry + 15, colW - 20, 3), line.Fraction, true);
+                    }
+                    string src = api ? "API · " + Ago(s.RateLimitsAtLocal) : cfg ? "config" : "local";
+                    Txt(g, src, small, dim, new RectangleF(p.Right - 16 - srcW, ry + 2, srcW, 14));
+                }
+                if (list.Count > rows)
+                    Txt(g, "+" + (list.Count - rows) + " modelos (role a lista lateral)", small, dim, new RectangleF(p.X + 16, p.Bottom - 16, 300, 14));
+            }
+        }
+
+        // ------------------------------------------------------------------
         // Sala [6]: Consumo & Historico
         // ------------------------------------------------------------------
         private void DrawConsumptionRoom(Graphics g, Rectangle area)
@@ -547,12 +665,17 @@ namespace FridaAgent
             _btnTestRect = _btnResetCooldownRect = _btnSetDefaultRect = _btnToggleEnabledRect = _btnResetTodayRect = _btnConfigKeysRect = Rectangle.Empty;
 
             List<ModelRuntimeStats> list = ModelQuotaGuard.GetAllStats();
-            Rectangle a = new Rectangle(area.X, area.Y, area.Width, 196);
-            Rectangle b = new Rectangle(area.X, a.Bottom + 8, area.Width, 170);
-            Rectangle c = new Rectangle(area.X, b.Bottom + 8, area.Width, area.Bottom - b.Bottom - 8);
+            const int limitRowH = 19;
+            int limitRows = Math.Min(Math.Max(list.Count, 1), 11);
+            Rectangle a = new Rectangle(area.X, area.Y, area.Width, 172);
+            Rectangle l = new Rectangle(area.X, a.Bottom + 8, area.Width, 58 + limitRows * limitRowH);
+            Rectangle b = new Rectangle(area.X, l.Bottom + 8, area.Width, 136);
+            Rectangle c = new Rectangle(area.X, b.Bottom + 8, area.Width, Math.Max(80, area.Bottom - b.Bottom - 8));
             DrawFramedPanel(g, a);
+            DrawFramedPanel(g, l);
             DrawFramedPanel(g, b);
             DrawFramedPanel(g, c);
+            DrawLimitsTable(g, l, list, limitRows, limitRowH);
 
             using (Font head = new Font("Segoe UI", 10f, FontStyle.Bold))
             using (Font cell = new Font("Segoe UI", 8.75f))

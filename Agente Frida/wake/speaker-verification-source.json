@@ -1,0 +1,33 @@
+{
+  "source": "https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip",
+  "documentation": "https://alphacephei.com/vosk/models",
+  "license": "Apache-2.0",
+  "archive_sha256": "A74D8F51144484813E16AF689BB0F916B7A111E2347F467C4933C1166097B5A7",
+  "files": [
+    {
+      "name": "final.ext.raw",
+      "bytes": 14929171,
+      "sha256": "D30354474AC719B3CFCE58186463302B988CF22CE3AFEE7237A2DA862C4A91D1"
+    },
+    {
+      "name": "mean.vec",
+      "bytes": 1199,
+      "sha256": "3BC5DFA9479C3AAACF4F45C155E9BD4772785449112566FAC23578C09E93BCD7"
+    },
+    {
+      "name": "mfcc.conf",
+      "bytes": 94,
+      "sha256": "86F4DF625B950B81B68864FDEFABF26AA65079F84EA20F40E7F9E7CCBB9C456C"
+    },
+    {
+      "name": "README.txt",
+      "bytes": 5006,
+      "sha256": "DF0A2AB600C337475B65FD4D6F29A1B9B18E09FC0211B5A7A4820DCE82D4E23A"
+    },
+    {
+      "name": "transform.mat",
+      "bytes": 65551,
+      "sha256": "FAB14481FB27C41DF0F1825AFE18530E4F6D128DBB2C239EE86D8D7096E22C33"
+    }
+  ]
+}

@@ -5,20 +5,17 @@
   "openrouter_api_key": "",
   "zai_glm_api_key": "",
   "siliconflow_api_key": "",
-  "prefer_zero_quota_tts": false,
+  "prefer_zero_quota_tts": true,
   "operator_name": "Operador",
+  "whatsapp_python": "",
+  "whatsapp_profile": "",
+  "whatsapp_chrome": "",
   "female_voice": "Aoede",
   "tts_model": "gemini-3.8-flash-lite-tts",
-  "transcribe_model": "gemini-3.5-transcribe",
+  "transcribe_model": "gemini-3.1-flash-lite",
   "brain_models": [
-    "gemini-flash-lite-latest",
-    "gemini-3.5-flash-lite",
-    "gemini-3-flash-preview",
-    "gemma-4-26b-a4b-it",
-    "gemini-3.5-flash",
     "gemini-3.8-flash",
-    "gemini-3.1-flash-lite",
-    "gemini-3.6-flash"
+    "gemini-3.1-flash-lite"
   ],
   "wake_phrases": [
     "Frida",
@@ -31,17 +28,20 @@
     "Escuta Frida"
   ],
   "start_with_windows": true,
-  "play_startup_greeting": true,
-  "followup_listen_seconds": 7,
+  "play_startup_greeting": false,
+  "followup_listen_seconds": 0,
   "preferred_mic_device": -1,
   "orb_x": -1,
   "orb_y": -1,
-  "vad_speech_multiplier": 1.65,
-  "min_rms_threshold": 220,
+  "vad_speech_multiplier": 1.45,
+  "min_rms_threshold": 140,
   "disabled_models": [],
   "preferred_models": [],
   "speaker_lock_enabled": true,
   "natural_voice_only": true,
-  "speaker_lock_tolerance": 1.0
+  "speaker_lock_tolerance": 1.0,
+  "model_limits": {},
+  "whatsapp_cache": "",
+  "whatsapp_chromedriver": "",
+  "whatsapp_routes_file": "whatsapp_routes.local.json"
 }
-

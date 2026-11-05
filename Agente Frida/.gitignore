@@ -13,6 +13,12 @@ frida_settings.json
 
 # Perfil Biometrico Vocal do Operador (Vetor MFCC pessoal)
 frida_voice_profile.json
+# Perfil neural de locutor (biometria de voz) e relatorios de cadastro
+frida_speaker_profile.json
+frida_speaker_profile.json.*
+VoiceTrainingReports/
+# Modelos ONNX grandes (baixar de github.com/k2-fsa/sherpa-onnx, ver wake/README.md)
+wake/sherpa/*.onnx
 
 # Telemetria e consumo real de cotas das APIs
 llm_usage.json
@@ -45,3 +51,34 @@ obj/
 .DS_Store
 Thumbs.db
 
+
+# Artefatos da validacao funcional
+scratch/baseline-functional-*/
+tests/ExecutionReports/
+tests/ConversationReports/
+**/__pycache__/
+__pycache__/
+frida_heartbeat.json
+frida_previous_interruption.json
+whatsapp_listener_profile.lock
+scratch/baseline-whatsapp-*/
+scratch/whatsapp-candidate/
+scratch/release-*/
+whatsapp_listener_profile/
+whatsapp_cache.db*
+whatsapp_routes.local.json
+# Evidencias reais da validacao: contem mensagens, nomes e telefones do WhatsApp.
+tests/results/whatsapp-*
+tests/results/identity-*
+tests/results/navigation-*
+tests/results/contact-*
+tests/results/e2e-usage.json
+# Relatorios de atendimento em execucao (transcricoes do operador)
+/ConversationReports/
+/ExecutionReports/
+# Diagnosticos ad hoc das intervencoes, memoria pessoal e pesos de modelos locais
+frida_memoria.json
+scratch/
+tests/results/
+wake/vosk-model-small-pt-0.3/
+wake/vosk-model-spk-0.4/

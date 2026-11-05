@@ -1,10 +1,14 @@
-// language: C# 5 (.NET Framework 4.8), file: SpeakerVoiceProfile.cs, target: Windows 10/11 x64
-// Perfil de voz do operador: assinatura acustica (MFCC + tom de voz) extraida de gravacoes de treino.
-// Cada trecho captado pelo microfone e comparado com o perfil; vozes/sons diferentes sao descartados
-// antes de serem enviados para transcricao.
+﻿// language: C# 5 (.NET Framework 4.8), file: SpeakerVoiceProfile.cs, target: Windows 10/11 x64
+// Perfil "so a minha voz" no padrao de mercado (Voice Match / Voice ID):
+//   1) Silero VAD separa fala humana de ruido do ambiente;
+//   2) WeSpeaker ResNet34-LM gera o embedding neural do locutor;
+//   3) similaridade de cosseno contra o centroide de 5 frases de cadastro, com limite calibrado
+//      pela consistencia do proprio cadastro (leave-one-out).
+// Trechos de outras vozes (TV, pessoas proximas) sao removidos antes da transcricao.
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Web.Script.Serialization;
 
@@ -12,37 +16,59 @@ namespace FridaAgent
 {
     public class VoiceProfileData
     {
+        public int version = 0;
+        public string model = "";
+        public string microphone = "";
         public string created_at = "";
-        public List<double[]> samples = new List<double[]>();
-        public double self_distance_mean = 1.0;
-        public double self_distance_std = 0.3;
+        public List<double[]> embeddings = new List<double[]>();
+        public double threshold = 0.5;
+        public double loo_mean, loo_min;
     }
 
     public class SpeakerCheckResult
     {
         public bool Accepted;
-        public double Distance;
+        public bool Inconclusive;      // fala curta demais para identificar (< 0,5 s)
+        public double Score;           // similaridade de cosseno (-1..1); maior = mais parecido
         public double Threshold;
-        public int VoicedFrames;
+        public double SpeechSeconds;
+        public int RemovedSegments;    // trechos de outra voz retirados antes da transcricao
+        public byte[] FilteredWav;     // audio para transcrever (apenas a sua voz quando houve mistura)
         public string Reason = "";
+    }
+
+    public sealed class EnrollmentSample
+    {
+        public double[] Embedding;
+        public double SpeechSeconds;
+    }
+
+    public sealed class EnrollmentSummary
+    {
+        public double Threshold, LooMean, LooMin;
+        public int Count;
+        public int WorstIndex = -1;    // frase que destoou das demais (para regravar)
     }
 
     public class SpeakerVoiceProfile
     {
+        public const int ProfileVersion = 4;
+        public const int RequiredPhrases = 5;
         private const int SampleRate = 16000;
-        private const int FrameLen = 400;   // 25 ms
-        private const int Hop = 160;        // 10 ms
-        private const int FftSize = 512;
-        private const int MelBands = 24;
-        private const int NumCeps = 12;     // c1..c12
-        public const int MinSamplesForLock = 10; // ~2 gravacoes de 20 s: com menos amostras o perfil fica instavel
+        public const double MinVerifySeconds = 0.5;     // menor trecho que o modelo identifica
+        public const double MinEnrollSeconds = 1.5;     // fala minima por frase de cadastro
+        private const double BaseThreshold = 0.50;      // ponto de operacao padrao (cosseno) para ResNet34-LM
+        private const double MinThreshold = 0.40;
+        private const double MinConsistency = 0.55;     // media leave-one-out minima do cadastro
+        private const double OutlierConsistency = 0.45;
 
         private readonly string _path;
         private readonly object _sync = new object();
         private VoiceProfileData _data = new VoiceProfileData();
-        private double[] _mu;
-        private double[] _sigma;
-        private static double[][] _melFilters;
+        private double[] _centroid;
+        private static readonly object AnalyzerSync = new object();
+        private static SileroVoiceActivity _analyzer;
+        private static string _analyzerError;
 
         public SpeakerVoiceProfile(string path)
         {
@@ -50,382 +76,319 @@ namespace FridaAgent
             Load();
         }
 
-        public int SampleCount
+        public static NeuralSpeakerEncoder Encoder { get { return NeuralSpeakerEncoder.Shared; } }
+        public static bool EngineAvailable { get { var e = Encoder; return e != null && e.Ready && Analyzer != null; } }
+        public static string EngineError
         {
-            get { lock (_sync) { return _data.samples.Count; } }
+            get
+            {
+                if (Encoder == null) return "modelo de locutor nao carregou (" + (SherpaNative.LoadError ?? "ver log") + ")";
+                if (Analyzer == null) return "detector de fala nao carregou (" + (_analyzerError ?? "ver log") + ")";
+                return "";
+            }
+        }
+
+        private static SileroVoiceActivity Analyzer
+        {
+            get
+            {
+                lock (AnalyzerSync)
+                {
+                    if (_analyzer == null && _analyzerError == null)
+                    {
+                        try { _analyzer = new SileroVoiceActivity(); }
+                        catch (Exception ex) { _analyzerError = ex.Message; BootLogger.Log("Silero VAD indisponivel: " + ex.Message); }
+                    }
+                    return _analyzer;
+                }
+            }
         }
 
         public bool IsReady
         {
-            get { return SampleCount >= MinSamplesForLock && _mu != null; }
+            get { lock (_sync) return _data.version == ProfileVersion && _centroid != null && EngineAvailable; }
+        }
+        public bool HasRefinedProfile { get { return IsReady; } }
+        public bool HasLegacyProfile { get { lock (_sync) return File.Exists(_path) && _data.version != ProfileVersion; } }
+        public int EnrollmentCount { get { lock (_sync) return _data.embeddings == null ? 0 : _data.embeddings.Count; } }
+        public double Threshold { get { lock (_sync) return _data.threshold; } }
+        public string Microphone { get { lock (_sync) return _data.microphone ?? ""; } }
+        public string CreatedAt { get { lock (_sync) return _data.created_at ?? ""; } }
+        public double Consistency { get { lock (_sync) return _data.loo_mean; } }
+
+        /// <summary>O embedding neural tolera troca de microfone; mantido para informar o usuario.</summary>
+        public bool MatchesMicrophone(string name)
+        {
+            lock (_sync) return IsReady && string.Equals((_data.microphone ?? "").Trim(), (name ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ValidVector(double[] v, int dim)
+        {
+            return v != null && v.Length == dim && v.All(x => !double.IsNaN(x) && !double.IsInfinity(x)) && v.Sum(x => x * x) > 0.5;
         }
 
         private void Load()
         {
             lock (_sync)
             {
+                _centroid = null;
                 try
                 {
-                    if (File.Exists(_path))
-                    {
-                        JavaScriptSerializer ser = new JavaScriptSerializer();
-                        VoiceProfileData d = ser.Deserialize<VoiceProfileData>(File.ReadAllText(_path, Encoding.UTF8));
-                        if (d != null && d.samples != null) _data = d;
-                    }
+                    if (!File.Exists(_path)) return;
+                    var d = new JavaScriptSerializer().Deserialize<VoiceProfileData>(File.ReadAllText(_path, Encoding.UTF8));
+                    if (d == null) return;
+                    _data = d;
+                    if (d.version != ProfileVersion || d.model != NeuralSpeakerEncoder.ModelFile || d.embeddings == null) return; // perfil antigo: exige novo cadastro
+                    int dim = d.embeddings.Count > 0 && d.embeddings[0] != null ? d.embeddings[0].Length : 0;
+                    if (dim < 64 || d.embeddings.Count < 3 || !d.embeddings.All(v => ValidVector(v, dim))) return;
+                    if (double.IsNaN(d.threshold) || d.threshold < MinThreshold || d.threshold > 0.8) d.threshold = BaseThreshold;
+                    _centroid = NeuralSpeakerEncoder.Mean(d.embeddings);
                 }
-                catch { }
-                RecomputeLocked();
+                catch (Exception ex) { BootLogger.Log("Perfil de voz ilegivel: " + ex.GetType().Name); }
             }
         }
 
-        private void SaveLocked()
+        private void SaveLocked(VoiceProfileData data)
         {
+            string temp = _path + ".tmp";
             try
             {
-                JavaScriptSerializer ser = new JavaScriptSerializer();
-                File.WriteAllText(_path, ser.Serialize(_data), new UTF8Encoding(false));
+                string folder = Path.GetDirectoryName(_path);
+                if (!string.IsNullOrEmpty(folder)) Directory.CreateDirectory(folder);
+                File.WriteAllText(temp, new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 }.Serialize(data), new UTF8Encoding(false));
+                if (File.Exists(_path)) File.Replace(temp, _path, _path + ".previous");
+                else File.Move(temp, _path);
             }
-            catch { }
+            catch (Exception ex) { throw new IOException("Nao foi possivel salvar o perfil de voz. " + ex.Message, ex); }
+            finally { try { if (File.Exists(temp)) File.Delete(temp); } catch { } }
         }
 
         public void Clear()
         {
             lock (_sync)
             {
-                _data = new VoiceProfileData();
-                _mu = null;
-                _sigma = null;
-                try { if (File.Exists(_path)) File.Delete(_path); } catch { }
-            }
-        }
-
-        /// <summary>Treina o perfil com uma gravacao longa (PCM 16 kHz mono): divide em janelas de ~3 s com fala.</summary>
-        public int EnrollFromLongRecording(byte[] pcm16)
-        {
-            int added = 0;
-            // Janelas de 3 s (frases) e de 1,2 s (palavras curtas, como a chamada "Frida!")
-            int[] windows = new int[] { SampleRate * 2 * 3, (int)(SampleRate * 2 * 1.2) };
-            int[] minVoiced = new int[] { 80, 35 };
-            for (int w = 0; w < windows.Length; w++)
-            {
-                int win = windows[w];
-                for (int off = 0; off + win <= pcm16.Length; off += win)
+                _data = new VoiceProfileData(); _centroid = null;
+                try
                 {
-                    int voiced;
-                    double[] emb = ComputeEmbedding(pcm16, off, win, out voiced);
-                    if (emb != null && voiced >= minVoiced[w])
-                    {
-                        lock (_sync) { _data.samples.Add(emb); }
-                        added++;
-                    }
+                    if (File.Exists(_path)) File.Delete(_path);
+                    if (File.Exists(_path + ".previous")) File.Delete(_path + ".previous");
                 }
+                catch (Exception ex) { throw new IOException("Nao foi possivel apagar o perfil. " + ex.Message, ex); }
             }
-            lock (_sync)
-            {
-                while (_data.samples.Count > 120) _data.samples.RemoveAt(0);
-                if (string.IsNullOrEmpty(_data.created_at)) _data.created_at = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
-                RecomputeLocked();
-                SaveLocked();
-            }
-            return added;
-        }
-
-        /// <summary>Compara um trecho WAV (cabecalho de 44 bytes) com o perfil.</summary>
-        public SpeakerCheckResult Check(byte[] wav16, double tolerance)
-        {
-            SpeakerCheckResult r = new SpeakerCheckResult();
-            int voiced;
-            int offset = (wav16 != null && wav16.Length > 44 && wav16[0] == 'R') ? 44 : 0;
-            double[] emb = ComputeEmbedding(wav16, offset, wav16 == null ? 0 : wav16.Length - offset, out voiced);
-            r.VoicedFrames = voiced;
-            double[] mu;
-            double[] sigma;
-            double selfMean, selfStd;
-            lock (_sync)
-            {
-                mu = _mu;
-                sigma = _sigma;
-                selfMean = _data.self_distance_mean;
-                selfStd = _data.self_distance_std;
-            }
-            if (mu == null)
-            {
-                r.Accepted = true;
-                r.Reason = "perfil nao treinado";
-                return r;
-            }
-            if (emb == null || voiced < 12)
-            {
-                r.Accepted = false;
-                r.Reason = "sem fala humana suficiente";
-                return r;
-            }
-            r.Distance = Distance(emb, mu, sigma);
-            // Calibrado em teste: voz treinada ~1,35 (mediana) vs. outra voz feminina parecida ~1,67.
-            // Trechos curtos (ex: so "Frida!") variam muito mais: o limite cresce ate 2x abaixo de ~2 s de fala.
-            double shortFactor = 1.0 + Math.Max(0.0, 1.0 - voiced / 200.0);
-            r.Threshold = Math.Max(1.3, selfMean + 2.2 * selfStd) * shortFactor * Math.Max(0.5, tolerance);
-            r.Accepted = r.Distance <= r.Threshold;
-            r.Reason = r.Accepted ? "voz do operador" : "voz diferente do perfil";
-            return r;
-        }
-
-        private void RecomputeLocked()
-        {
-            int n = _data.samples.Count;
-            if (n < MinSamplesForLock)
-            {
-                _mu = null;
-                _sigma = null;
-                return;
-            }
-            int dim = _data.samples[0].Length;
-            double[] mu = new double[dim];
-            double[] sg = new double[dim];
-            for (int i = 0; i < n; i++)
-                for (int d = 0; d < dim; d++) mu[d] += _data.samples[i][d] / n;
-            for (int i = 0; i < n; i++)
-                for (int d = 0; d < dim; d++) sg[d] += Math.Pow(_data.samples[i][d] - mu[d], 2) / n;
-            for (int d = 0; d < dim; d++) sg[d] = Math.Max(Math.Sqrt(sg[d]), 0.05 + Math.Abs(mu[d]) * 0.05);
-            // Tom de voz: chamar alguem ("Frida!") sobe o tom; tolerancia minima de ~30 Hz
-            if (dim > NumCeps * 2) sg[NumCeps * 2] = Math.Max(sg[NumCeps * 2], 0.6);
-            _mu = mu;
-            _sigma = sg;
-
-            // Calibracao: distancia de cada amostra de treino ao proprio perfil
-            double sum = 0, sum2 = 0;
-            for (int i = 0; i < n; i++)
-            {
-                double dd = Distance(_data.samples[i], mu, sg);
-                sum += dd;
-                sum2 += dd * dd;
-            }
-            double mean = sum / n;
-            _data.self_distance_mean = mean;
-            _data.self_distance_std = Math.Sqrt(Math.Max(0, sum2 / n - mean * mean));
-        }
-
-        // Dimensoes usadas na comparacao: medias dos MFCC c1..c12 + tom de voz (os desvios pioraram a separacao no teste)
-        private static readonly int[] CompareDims = new int[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, NumCeps * 2 };
-
-        private static double Distance(double[] x, double[] mu, double[] sigma)
-        {
-            double acc = 0;
-            int used = 0;
-            for (int i = 0; i < CompareDims.Length; i++)
-            {
-                int d = CompareDims[i];
-                if (d >= x.Length || d >= mu.Length) continue;
-                double z = (x[d] - mu[d]) / sigma[d];
-                acc += z * z;
-                used++;
-            }
-            return used == 0 ? 0 : Math.Sqrt(acc / used);
-        }
-
-        /// <summary>Aprendizado continuo: comandos iniciados pelo operador (F4/icone) entram no perfil.</summary>
-        public bool AddUtterance(byte[] wav16)
-        {
-            int offset = (wav16 != null && wav16.Length > 44 && wav16[0] == 'R') ? 44 : 0;
-            int voiced;
-            double[] emb = ComputeEmbedding(wav16, offset, wav16 == null ? 0 : wav16.Length - offset, out voiced);
-            if (emb == null || voiced < 80) return false;
-            lock (_sync)
-            {
-                _data.samples.Add(emb);
-                while (_data.samples.Count > 120) _data.samples.RemoveAt(0);
-                RecomputeLocked();
-                SaveLocked();
-            }
-            return true;
         }
 
         // ------------------------------------------------------------------
-        // Extracao de caracteristicas
+        // Cadastro (5 frases curtas, estilo Voice Match)
         // ------------------------------------------------------------------
 
-        /// <summary>Assinatura: media e desvio dos MFCC c1..c12 nos quadros com voz + tom medio (pitch).</summary>
-        public static double[] ComputeEmbedding(byte[] pcm, int offset, int length, out int voicedFrames)
+        /// <summary>Analisa uma frase de cadastro. Lanca InvalidDataException com orientacao clara se nao servir.</summary>
+        public EnrollmentSample CreateEnrollmentSample(byte[] pcmOrWav)
         {
-            voicedFrames = 0;
-            if (pcm == null || length < FrameLen * 2 * 10) return null;
-            int samples = length / 2;
-            double[] x = new double[samples];
-            for (int i = 0; i < samples; i++)
-            {
-                x[i] = (short)(pcm[offset + i * 2] | (pcm[offset + i * 2 + 1] << 8));
-            }
-
-            int frames = (samples - FrameLen) / Hop;
-            if (frames <= 0) return null;
-
-            // Limiar de voz relativo: quadros acima de 35% da energia RMS mais alta (ignora silencio/ruido de fundo)
-            double[] frameRms = new double[frames];
-            double maxRms = 0;
-            for (int f = 0; f < frames; f++)
-            {
-                double s = 0;
-                int st = f * Hop;
-                for (int i = 0; i < FrameLen; i++) s += x[st + i] * x[st + i];
-                frameRms[f] = Math.Sqrt(s / FrameLen);
-                if (frameRms[f] > maxRms) maxRms = frameRms[f];
-            }
-            if (maxRms < 150) return null;
-            double gate = Math.Max(140, maxRms * 0.35);
-
-            double[][] mel = GetMelFilters();
-            double[] window = new double[FrameLen];
-            for (int i = 0; i < FrameLen; i++) window[i] = 0.54 - 0.46 * Math.Cos(2 * Math.PI * i / (FrameLen - 1));
-
-            double[] sum = new double[NumCeps];
-            double[] sum2 = new double[NumCeps];
-            double pitchSum = 0;
-            int pitchCount = 0;
-            double[] re = new double[FftSize];
-            double[] im = new double[FftSize];
-            double[] melE = new double[MelBands];
-
-            for (int f = 0; f < frames; f++)
-            {
-                if (frameRms[f] < gate) continue;
-                int st = f * Hop;
-                Array.Clear(re, 0, FftSize);
-                Array.Clear(im, 0, FftSize);
-                double prev = 0;
-                for (int i = 0; i < FrameLen; i++)
-                {
-                    double v = x[st + i];
-                    re[i] = (v - 0.97 * prev) * window[i]; // pre-enfase
-                    prev = v;
-                }
-                Fft(re, im);
-                for (int b = 0; b < MelBands; b++)
-                {
-                    double e = 0;
-                    double[] filt = mel[b];
-                    for (int k = 0; k < filt.Length; k++)
-                    {
-                        if (filt[k] == 0) continue;
-                        e += filt[k] * (re[k] * re[k] + im[k] * im[k]);
-                    }
-                    melE[b] = Math.Log(e + 1e-3);
-                }
-                for (int c = 1; c <= NumCeps; c++)
-                {
-                    double acc = 0;
-                    for (int b = 0; b < MelBands; b++) acc += melE[b] * Math.Cos(Math.PI * c * (b + 0.5) / MelBands);
-                    sum[c - 1] += acc;
-                    sum2[c - 1] += acc * acc;
-                }
-
-                double pitch = EstimatePitch(x, st, FrameLen);
-                if (pitch > 0)
-                {
-                    pitchSum += pitch;
-                    pitchCount++;
-                }
-                voicedFrames++;
-            }
-
-            if (voicedFrames < 10) return null;
-            double[] emb = new double[NumCeps * 2 + 1];
-            for (int c = 0; c < NumCeps; c++)
-            {
-                double m = sum[c] / voicedFrames;
-                emb[c] = m;
-                emb[NumCeps + c] = Math.Sqrt(Math.Max(0, sum2[c] / voicedFrames - m * m));
-            }
-            emb[NumCeps * 2] = pitchCount > 5 ? (pitchSum / pitchCount) / 50.0 : 0;
-            return emb;
+            if (!EngineAvailable) throw new InvalidOperationException("Verificador de voz indisponivel: " + EngineError);
+            int offset, length;
+            if (!GetPcmRange(pcmOrWav, out offset, out length)) throw new InvalidDataException("Formato de audio invalido.");
+            double clipping = ClippingFraction(pcmOrWav, offset, length);
+            if (clipping > 0.01) throw new InvalidDataException("O microfone saturou (voz alta ou perto demais). Afaste-se um pouco e repita esta frase.");
+            var segments = Analyzer.ExtractSegments(pcmOrWav, offset, length);
+            var speech = Concat(segments);
+            double seconds = speech.Length / (double)SampleRate;
+            if (seconds < MinEnrollSeconds)
+                throw new InvalidDataException(seconds < 0.2 ? "Nenhuma fala detectada. Leia a frase em voz normal, perto do microfone." : "Fala curta demais (" + seconds.ToString("F1") + " s). Leia a frase inteira, sem pausas longas.");
+            var embedding = Encoder.Embed(speech);
+            if (embedding == null) throw new InvalidDataException("Nao foi possivel extrair sua assinatura de voz desta frase. Repita.");
+            return new EnrollmentSample { Embedding = embedding, SpeechSeconds = seconds };
         }
 
-        /// <summary>Tom de voz (Hz) por autocorrelacao entre 70 e 400 Hz; 0 se o quadro nao for vozeado.</summary>
-        private static double EstimatePitch(double[] x, int start, int len)
+        /// <summary>Confere consistencia das frases (leave-one-out) e calcula o limite. Nao salva.</summary>
+        public static EnrollmentSummary Summarize(IList<double[]> embeddings)
         {
-            int minLag = SampleRate / 400;
-            int maxLag = SampleRate / 70;
-            if (len <= maxLag + 10) len = Math.Min(x.Length - start, maxLag * 2 + 20);
-            if (start + len > x.Length) return 0;
-            double energy = 0;
-            for (int i = 0; i < len; i++) energy += x[start + i] * x[start + i];
-            if (energy <= 0) return 0;
-            double best = 0;
-            int bestLag = 0;
-            for (int lag = minLag; lag <= maxLag && lag < len; lag++)
+            var s = new EnrollmentSummary { Count = embeddings == null ? 0 : embeddings.Count };
+            if (s.Count < 3) return s;
+            var loo = new double[s.Count];
+            for (int i = 0; i < s.Count; i++)
             {
-                double acc = 0;
-                for (int i = 0; i + lag < len; i++) acc += x[start + i] * x[start + i + lag];
-                if (acc > best)
-                {
-                    best = acc;
-                    bestLag = lag;
-                }
+                var others = new List<double[]>();
+                for (int j = 0; j < s.Count; j++) if (j != i) others.Add(embeddings[j]);
+                loo[i] = NeuralSpeakerEncoder.Cosine(embeddings[i], NeuralSpeakerEncoder.Mean(others));
             }
-            if (bestLag == 0 || best / energy < 0.35) return 0;
-            return SampleRate / (double)bestLag;
+            s.LooMean = loo.Average(); s.LooMin = loo.Min();
+            int worst = Array.IndexOf(loo, s.LooMin);
+            if (s.LooMin < OutlierConsistency || s.LooMin < s.LooMean - 0.15) s.WorstIndex = worst;
+            // Sua voz, em condicoes reais, fica bem acima do limite; vozes de outras pessoas ficam abaixo de ~0,35.
+            s.Threshold = Math.Max(MinThreshold, Math.Min(BaseThreshold, s.LooMean - 0.22));
+            return s;
         }
 
-        private static double[][] GetMelFilters()
+        public EnrollmentSummary SaveEnrollment(IList<double[]> embeddings, string microphone)
         {
-            if (_melFilters != null) return _melFilters;
-            int bins = FftSize / 2 + 1;
-            double melLow = HzToMel(90), melHigh = HzToMel(7200);
-            double[] pts = new double[MelBands + 2];
-            for (int i = 0; i < pts.Length; i++)
+            if (embeddings == null || embeddings.Count < RequiredPhrases) throw new InvalidDataException("Grave as " + RequiredPhrases + " frases antes de salvar.");
+            var s = Summarize(embeddings);
+            if (s.LooMean < MinConsistency)
+                throw new InvalidDataException("As frases ficaram inconsistentes entre si (consistencia " + s.LooMean.ToString("F2") + "). Grave sozinho, sem TV/conversa ao fundo, e repita.");
+            if (s.WorstIndex >= 0)
+                throw new InvalidDataException("A frase " + (s.WorstIndex + 1) + " destoou das demais. Regrave somente ela.");
+            var data = new VoiceProfileData
             {
-                double hz = MelToHz(melLow + (melHigh - melLow) * i / (MelBands + 1));
-                pts[i] = Math.Floor((FftSize + 1) * hz / SampleRate);
-            }
-            double[][] f = new double[MelBands][];
-            for (int b = 0; b < MelBands; b++)
+                version = ProfileVersion, model = NeuralSpeakerEncoder.ModelFile, microphone = microphone ?? "",
+                created_at = DateTime.Now.ToString("yyyy-MM-dd HH:mm"), embeddings = embeddings.Select(x => (double[])x.Clone()).ToList(),
+                threshold = s.Threshold, loo_mean = s.LooMean, loo_min = s.LooMin
+            };
+            lock (_sync)
             {
-                f[b] = new double[bins];
-                for (int k = (int)pts[b]; k < (int)pts[b + 1] && k < bins; k++)
-                    f[b][k] = (k - pts[b]) / Math.Max(1, pts[b + 1] - pts[b]);
-                for (int k = (int)pts[b + 1]; k < (int)pts[b + 2] && k < bins; k++)
-                    f[b][k] = (pts[b + 2] - k) / Math.Max(1, pts[b + 2] - pts[b + 1]);
+                SaveLocked(data);
+                _data = data; _centroid = NeuralSpeakerEncoder.Mean(data.embeddings);
             }
-            _melFilters = f;
-            return f;
+            BootLogger.Log("Perfil de voz neural salvo: frases=" + s.Count + " consistencia=" + s.LooMean.ToString("F3") + " limite=" + s.Threshold.ToString("F3"));
+            return s;
         }
 
-        private static double HzToMel(double hz) { return 2595 * Math.Log10(1 + hz / 700.0); }
-        private static double MelToHz(double mel) { return 700 * (Math.Pow(10, mel / 2595.0) - 1); }
+        // ------------------------------------------------------------------
+        // Verificacao em uso
+        // ------------------------------------------------------------------
 
-        private static void Fft(double[] re, double[] im)
+        /// <summary>Confere se o audio (WAV 16 kHz mono ou PCM) e a voz cadastrada.
+        /// tolerance 0,75..1 (menor = mais rigoroso), como em config.json.</summary>
+        public SpeakerCheckResult Check(byte[] audio, double tolerance)
         {
-            int n = re.Length;
-            for (int i = 1, j = 0; i < n; i++)
+            var r = new SpeakerCheckResult();
+            double[] centroid; double threshold;
+            lock (_sync) { centroid = _centroid; threshold = _data.threshold; }
+            if (!IsReady || centroid == null) { r.Reason = EngineAvailable ? "voz ainda nao cadastrada" : "verificador indisponivel: " + EngineError; return r; }
+            int offset, length;
+            if (!GetPcmRange(audio, out offset, out length)) { r.Reason = "formato de audio invalido"; return r; }
+            double tol = (double.IsNaN(tolerance) || double.IsInfinity(tolerance)) ? 1.0 : Math.Max(0.75, Math.Min(1.0, tolerance));
+            var segments = Analyzer.ExtractSegments(audio, offset, length);
+            var speech = Concat(segments);
+            r.SpeechSeconds = speech.Length / (double)SampleRate;
+            r.Threshold = Math.Min(0.75, threshold / tol + (r.SpeechSeconds < 1.0 ? 0.04 : 0.0));
+            if (r.SpeechSeconds < MinVerifySeconds)
             {
-                int bit = n >> 1;
-                for (; (j & bit) != 0; bit >>= 1) j ^= bit;
-                j ^= bit;
-                if (i < j)
-                {
-                    double t = re[i]; re[i] = re[j]; re[j] = t;
-                    t = im[i]; im[i] = im[j]; im[j] = t;
-                }
+                r.Inconclusive = r.SpeechSeconds >= 0.15;
+                r.Reason = r.SpeechSeconds < 0.15 ? "sem fala humana (ruido do ambiente)" : "fala curta demais para identificar";
+                return r;
             }
-            for (int len = 2; len <= n; len <<= 1)
+            var embedding = Encoder.Embed(speech);
+            if (embedding == null) { r.Inconclusive = true; r.Reason = "fala curta demais para identificar"; return r; }
+            r.Score = NeuralSpeakerEncoder.Cosine(embedding, centroid);
+
+            // Mistura de vozes: avalia cada trecho longo e remove os que claramente sao de outra pessoa.
+            var kept = new List<float[]>();
+            var scores = new double?[segments.Count];
+            double bestSegment = double.MinValue;
+            if (segments.Count > 1)
+                for (int i = 0; i < segments.Count; i++)
+                {
+                    if (segments[i].Length < SampleRate * 0.8) continue;
+                    var e = Encoder.Embed(segments[i]);
+                    if (e == null) continue;
+                    scores[i] = NeuralSpeakerEncoder.Cosine(e, centroid);
+                    bestSegment = Math.Max(bestSegment, scores[i].Value);
+                }
+            // Corte: claramente abaixo do limite, ou muito abaixo do seu melhor trecho neste mesmo audio.
+            double cut = r.Threshold - 0.10;
+            if (bestSegment >= r.Threshold + 0.15) cut = Math.Max(cut, bestSegment - 0.30);
+            for (int i = 0; i < segments.Count; i++)
             {
-                double ang = -2 * Math.PI / len;
-                double wr = Math.Cos(ang), wi = Math.Sin(ang);
-                for (int i = 0; i < n; i += len)
-                {
-                    double cr = 1, ci = 0;
-                    for (int k = 0; k < len / 2; k++)
-                    {
-                        int a = i + k, b = i + k + len / 2;
-                        double tr = re[b] * cr - im[b] * ci;
-                        double ti = re[b] * ci + im[b] * cr;
-                        re[b] = re[a] - tr; im[b] = im[a] - ti;
-                        re[a] += tr; im[a] += ti;
-                        double ncr = cr * wr - ci * wi;
-                        ci = cr * wi + ci * wr;
-                        cr = ncr;
-                    }
-                }
+                if (scores[i].HasValue && scores[i].Value < cut) { r.RemovedSegments++; continue; }
+                kept.Add(segments[i]);
             }
+            // Se a sua voz domina um trecho, nao deixe a voz de fundo derrubar a decisao do audio inteiro.
+            if (r.RemovedSegments > 0 && kept.Count > 0)
+            {
+                var keptSpeech = Concat(kept);
+                var keptEmbedding = keptSpeech.Length >= SampleRate * MinVerifySeconds ? Encoder.Embed(keptSpeech) : null;
+                if (keptEmbedding != null) r.Score = Math.Max(r.Score, NeuralSpeakerEncoder.Cosine(keptEmbedding, centroid));
+                r.FilteredWav = BuildWav(kept);
+            }
+            r.Accepted = r.Score >= r.Threshold && kept.Count > 0;
+            r.Reason = r.Accepted
+                ? (r.RemovedSegments > 0 ? "sua voz; " + r.RemovedSegments + " trecho(s) de outra voz removido(s)" : "sua voz")
+                : "voz diferente da cadastrada";
+            return r; // FilteredWav nulo = transcrever o audio original
+        }
+
+        /// <summary>Ha fala humana (nao apenas ruido) no audio? Usado quando o filtro de voz esta desligado.</summary>
+        public static bool HasHumanSpeech(byte[] audio, double minSeconds)
+        {
+            int offset, length;
+            if (!GetPcmRange(audio, out offset, out length)) return false;
+            var analyzer = Analyzer;
+            if (analyzer == null) return true; // sem VAD, nao bloqueia
+            return analyzer.ExtractSpeech(audio, offset, length).Length >= SampleRate * minSeconds;
+        }
+
+        // ------------------------------------------------------------------
+        // Utilitarios
+        // ------------------------------------------------------------------
+
+        private static float[] Concat(List<float[]> segments)
+        {
+            int total = 0; foreach (var s in segments) total += s.Length;
+            var all = new float[total]; int pos = 0;
+            foreach (var s in segments) { Array.Copy(s, 0, all, pos, s.Length); pos += s.Length; }
+            return all;
+        }
+
+        private static byte[] BuildWav(List<float[]> segments)
+        {
+            int gap = SampleRate / 5; // 200 ms de silencio entre trechos
+            int samples = 0; foreach (var s in segments) samples += s.Length + gap;
+            var wav = new byte[44 + samples * 2];
+            Encoding.ASCII.GetBytes("RIFF").CopyTo(wav, 0); BitConverter.GetBytes(36 + samples * 2).CopyTo(wav, 4);
+            Encoding.ASCII.GetBytes("WAVEfmt ").CopyTo(wav, 8); BitConverter.GetBytes(16).CopyTo(wav, 16);
+            BitConverter.GetBytes((short)1).CopyTo(wav, 20); BitConverter.GetBytes((short)1).CopyTo(wav, 22);
+            BitConverter.GetBytes(SampleRate).CopyTo(wav, 24); BitConverter.GetBytes(SampleRate * 2).CopyTo(wav, 28);
+            BitConverter.GetBytes((short)2).CopyTo(wav, 32); BitConverter.GetBytes((short)16).CopyTo(wav, 34);
+            Encoding.ASCII.GetBytes("data").CopyTo(wav, 36); BitConverter.GetBytes(samples * 2).CopyTo(wav, 40);
+            int pos = 44 + gap; // comeca com uma pausa curta
+            foreach (var s in segments)
+            {
+                foreach (float f in s)
+                {
+                    int v = (int)Math.Round(f * 32767.0); v = Math.Max(-32768, Math.Min(32767, v));
+                    wav[pos] = (byte)v; wav[pos + 1] = (byte)(v >> 8); pos += 2;
+                    if (pos >= wav.Length) break;
+                }
+                pos += gap * 2;
+                if (pos >= wav.Length) break;
+            }
+            return wav;
+        }
+
+        private static double ClippingFraction(byte[] pcm, int offset, int length)
+        {
+            int clipped = 0, n = length / 2;
+            for (int i = 0; i < n; i++) if (Math.Abs((int)(short)(pcm[offset + 2 * i] | pcm[offset + 2 * i + 1] << 8)) >= 32000) clipped++;
+            return clipped / (double)Math.Max(1, n);
+        }
+
+        public static double Rms(byte[] pcm, int offset, int length)
+        {
+            double e = 0; int n = length / 2;
+            for (int i = 0; i < n; i++) { double v = (short)(pcm[offset + 2 * i] | pcm[offset + 2 * i + 1] << 8); e += v * v; }
+            return Math.Sqrt(e / Math.Max(1, n));
+        }
+
+        public static bool GetPcmRange(byte[] audio, out int offset, out int length)
+        {
+            offset = 0; length = audio == null ? 0 : audio.Length;
+            if (audio == null || audio.Length < 2) return false;
+            if (audio.Length >= 12 && Encoding.ASCII.GetString(audio, 0, 4) == "RIFF")
+            {
+                if (Encoding.ASCII.GetString(audio, 8, 4) != "WAVE") return false;
+                bool format = false; int pos = 12;
+                while (pos + 8 <= audio.Length)
+                {
+                    string id = Encoding.ASCII.GetString(audio, pos, 4); int size = BitConverter.ToInt32(audio, pos + 4);
+                    if (size < 0 || size > audio.Length - pos - 8) return false;
+                    if (id == "fmt " && size >= 16) format = BitConverter.ToInt16(audio, pos + 8) == 1 && BitConverter.ToInt16(audio, pos + 10) == 1 && BitConverter.ToInt32(audio, pos + 12) == SampleRate && BitConverter.ToInt16(audio, pos + 22) == 16;
+                    if (id == "data") { offset = pos + 8; length = size & ~1; return format && size >= 2; }
+                    pos += 8 + size + (size & 1);
+                }
+                return false;
+            }
+            length = audio.Length & ~1;
+            return length >= 2;
         }
     }
 }

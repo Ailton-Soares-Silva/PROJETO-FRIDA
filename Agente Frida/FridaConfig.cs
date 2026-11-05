@@ -1,4 +1,4 @@
-// language: C# 5 (.NET Framework 4.8), file: FridaConfig.cs, target: Windows 10/11 x64
+﻿// language: C# 5 (.NET Framework 4.8), file: FridaConfig.cs, target: Windows 10/11 x64
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -10,36 +10,67 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Agente Frida - Assistente Holografica Autonoma")]
 [assembly: AssemblyDescription("Agente Pessoal de Voz, Engenharia, Codigo, 3D e Automacao Total")]
 [assembly: AssemblyProduct("Projeto Frida")]
-[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.2.1.0")]
 
 namespace FridaAgent
 {
+    // Selecao essencial: IDs fixos impedem a reentrada de modelos redundantes.
+    public static class ModelSelection
+    {
+        public const string GroqBrain = "openai/gpt-oss-120b";
+        public const string CerebrasBrain = "gpt-oss-120b";
+        public const string GeminiComplex = "gemini-3.8-flash";
+        public const string GeminiLite = "gemini-3.1-flash-lite";
+        public const string Transcription = "whisper-large-v3-turbo";
+        public const string Speech = "gemini-3.8-flash-lite-tts";
+        // Francisca: ~2x mais rapida que a Thalita para sintetizar (563 caracteres: 10,3 s x 19,3 s em 03/11).
+        public const string EdgeSpeech = "pt-BR-FranciscaNeural"; // Edge-TTS gratuito (bucket "tts_edge")
+        public const string EdgeSpeechName = "Francisca";
+
+        public static string[] BrainModels()
+        {
+            return new string[] { GeminiComplex, GeminiLite };
+        }
+
+        public static bool IsAllowed(string bucket, string model)
+        {
+            string b = (bucket ?? "").ToLowerInvariant();
+            if (b == "oai_groq") return string.Equals(model, GroqBrain, StringComparison.OrdinalIgnoreCase);
+            if (b == "oai_cerebras") return string.Equals(model, CerebrasBrain, StringComparison.OrdinalIgnoreCase);
+            if (b == "stt_groq") return string.Equals(model, Transcription, StringComparison.OrdinalIgnoreCase);
+            if (b == "tts") return string.Equals(model, Speech, StringComparison.OrdinalIgnoreCase);
+            if (b == "tts_edge") return string.Equals(model, EdgeSpeech, StringComparison.OrdinalIgnoreCase);
+            if (b == "stt") return string.Equals(model, GeminiLite, StringComparison.OrdinalIgnoreCase);
+            if (b == "gemini" || b == "vision" || b == "gsearch")
+                return string.Equals(model, GeminiComplex, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(model, GeminiLite, StringComparison.OrdinalIgnoreCase);
+            return false;
+        }
+    }
+
     public class FridaSettings
     {
-        // High-speed Free-Tier Alternative & Chinese AI Providers (OpenAI-compatible)
-        public string groq_api_key = "";         // Groq LPU: Whisper-v3-Turbo STT (2,000 req/day) + Qwen3 / Llama-3.3-70B (400-1,000 tok/s)
-        public string zai_glm_api_key = "";      // Zhipu / Z.ai Chinese Official: GLM-4.5-Flash & GLM-4V-Flash (100% Permanent Free)
-        public string siliconflow_api_key = "";  // SiliconFlow Chinese Cloud: Qwen3-8B / DeepSeek-R1 / SenseVoiceSmall ASR (Free)
-        public string cerebras_api_key = "";     // Cerebras WSE: Qwen-3 32B / Llama 3.3 at 2,000+ tok/s (1M free tokens/day)
-        public string openrouter_api_key = "";   // OpenRouter: DeepSeek-V3:free / Qwen3-235B:free / GLM-4.5-Air:free
+        // Provedores essenciais: Groq principal e Cerebras reserva.
+        public string groq_api_key = "";
+        public string zai_glm_api_key = "";     // Credencial legada preservada, sem rotas ativas.
+        public string siliconflow_api_key = ""; // Credencial legada preservada, sem rotas ativas.
+        public string cerebras_api_key = "";
+        public string openrouter_api_key = "";  // Credencial legada preservada, sem rotas ativas.
 
         // Google Gemini key (dedicated to Frida's Revision 1 natural female voice Aoede + Vision/Backup)
         public string api_key = "";
-        public bool prefer_zero_quota_tts = false; // false = Voz natural feminina Aoede da Revisao 1 como padrao
+        public bool prefer_zero_quota_tts = true; // true = Edge Neural Francisca (gratuita) como voz principal; Gemini Aoede (paga) so como reserva
         public string operator_name = "Ailton";
+        public string whatsapp_python = "";
+        public string whatsapp_profile = "";
+        public string whatsapp_chrome = "";
+        public string whatsapp_cache = "";
+        public string whatsapp_chromedriver = "";
+        public string whatsapp_routes_file = "whatsapp_routes.local.json";
         public string female_voice = "Aoede"; // Aoede, Kore, Leda, Zephyr
-        public string tts_model = "gemini-3.8-flash-tts";
-        public string transcribe_model = "gemini-flash-lite-latest";
-        public string[] brain_models = new string[]
-        {
-            "gemini-flash-lite-latest",
-            "gemini-3.5-flash-lite",
-            "gemini-3-flash-preview",
-            "gemma-4-26b-a4b-it",
-            "gemini-3.5-flash",
-            "gemini-3.8-flash",
-            "gemini-3.1-flash-lite"
-        };
+        public string tts_model = ModelSelection.Speech;
+        public string transcribe_model = ModelSelection.GeminiLite;
+        public string[] brain_models = ModelSelection.BrainModels();
         public string[] wake_phrases = new string[]
         {
             "Frida",
@@ -52,21 +83,26 @@ namespace FridaAgent
             "Escuta Frida"
         };
         public bool start_with_windows = true;
-        public bool play_startup_greeting = true;
-        public int followup_listen_seconds = 7;
+        public bool play_startup_greeting = false;
+        public int followup_listen_seconds = FridaSessionControl.IdleSeconds;
+        public int wake_request_seconds = FridaSessionControl.IdleSeconds;
         public int preferred_mic_device = -1; // -1 = Auto-detect active physical mic (ignores dead Steam Streaming Mic)
         public int orb_x = -1;
         public int orb_y = -1;
-        public double vad_speech_multiplier = 1.65;
-        public int min_rms_threshold = 220;
+        public double vad_speech_multiplier = 1.45;
+        public int min_rms_threshold = 140;
         // Gerenciador de LLMs: chaves no formato "bucket:modelo" (ex: "oai_groq:openai/gpt-oss-120b")
         public string[] disabled_models = new string[0];
         public string[] preferred_models = new string[0];
-        // Filtro "ouvir apenas o operador": exige perfil treinado (frida_voice_profile.json)
+        // Filtro "ouvir apenas o operador": exige perfil treinado (frida_speaker_profile.json)
         public bool speaker_lock_enabled = true;
         // true = nunca usar vozes robóticas de reserva (Google/Maria); sem cota Gemini a resposta aparece na tela
         public bool natural_voice_only = true;
-        public double speaker_lock_tolerance = 1.0; // >1 aceita mais variacao (ex: voz rouca), <1 mais rigoroso
+        public double speaker_lock_tolerance = 1.0; // 0.75..1; valores menores tornam o filtro mais rigoroso
+        // Limites definidos pelo operador para o painel Zelda quando o provedor nao informa (ex.: Gemini).
+        // Chave "bucket:modelo:janela" com janela rpm|rph|rpd|tpm|tph|tpd. Ex.: "gemini:gemini-3.1-flash-lite:rpd": 300
+        // Limites enviados pela API (Groq/Cerebras) sempre prevalecem sobre estes.
+        public Dictionary<string, long> model_limits = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
 
         public static FridaSettings LoadOrCreate(string configPath)
         {
@@ -114,36 +150,18 @@ namespace FridaAgent
                 cfg.openrouter_api_key = (Environment.GetEnvironmentVariable("OPENROUTER_API_KEY") ?? "").Trim();
             }
 
-            // Ensure high-quota Free-Tier resilient models lead the brain cascade even on older config.json files
-            string[] resilientPriority = new string[]
-            {
-                "gemini-flash-lite-latest",
-                "gemini-3.5-flash-lite",
-                "gemini-3-flash-preview",
-                "gemma-4-26b-a4b-it",
-                "gemini-3.5-flash",
-                "gemini-3.8-flash",
-                "gemini-3.1-flash-lite"
-            };
-            List<string> mergedModels = new List<string>();
-            for (int i = 0; i < resilientPriority.Length; i++)
-            {
-                mergedModels.Add(resilientPriority[i]);
-            }
-            if (cfg.brain_models != null)
-            {
-                for (int i = 0; i < cfg.brain_models.Length; i++)
-                {
-                    string existing = (cfg.brain_models[i] ?? "").Trim();
-                    if (!string.IsNullOrEmpty(existing) && !mergedModels.Contains(existing))
-                    {
-                        mergedModels.Add(existing);
-                    }
-                }
-            }
-            cfg.brain_models = mergedModels.ToArray();
+            // Normaliza configuracoes antigas sem reinserir aliases e previews.
+            cfg.brain_models = ModelSelection.BrainModels();
+            cfg.transcribe_model = ModelSelection.GeminiLite;
+            cfg.tts_model = ModelSelection.Speech;
+            cfg.play_startup_greeting = false;
+            cfg.followup_listen_seconds = FridaSessionControl.IdleSeconds;
+            cfg.wake_request_seconds = FridaSessionControl.IdleSeconds;
             if (cfg.disabled_models == null) cfg.disabled_models = new string[0];
             if (cfg.preferred_models == null) cfg.preferred_models = new string[0];
+            cfg.model_limits = cfg.model_limits == null
+                ? new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, long>(cfg.model_limits, StringComparer.OrdinalIgnoreCase);
 
             Save(cfg, configPath);
             return cfg;
@@ -359,65 +377,52 @@ namespace FridaAgent
 
         private void SaveLocked()
         {
-            try
-            {
-                JavaScriptSerializer ser = new JavaScriptSerializer();
-                File.WriteAllText(_filePath, ser.Serialize(_data), new UTF8Encoding(false));
-            }
-            catch { }
+            var result=FridaVerifiedTools.WriteFile(_filePath,new JavaScriptSerializer().Serialize(_data),false);
+            if(result.Status!=FridaResultStatus.Verified)throw new IOException(result.Summary);
         }
 
-        public string ExecuteAction(string action, string category, string content, string dueIso, string itemId)
+        public string ExecuteAction(string action,string category,string content,string dueIso,string itemId)
+        { return ExecuteVerifiedAction(action,category,content,dueIso,itemId).Output; }
+
+        public FridaToolReceipt ExecuteVerifiedAction(string action,string category,string content,string dueIso,string itemId)
         {
-            lock (_sync)
+            lock(_sync)
             {
-                string act = (action ?? "list").Trim().ToLowerInvariant();
-                if (act == "add" || act == "save" || act == "create")
+                var json=new JavaScriptSerializer {MaxJsonLength=16*1024*1024};
+                string before=json.Serialize(_data);string act=(action ?? "list").Trim().ToLowerInvariant();
+                var receipt=new FridaToolReceipt("secretary_memory",act,_filePath,act!="list");
+                try
                 {
-                    SecretaryItem item = new SecretaryItem();
-                    item.id = Guid.NewGuid().ToString("N").Substring(0, 6);
-                    item.category = string.IsNullOrEmpty(category) ? "nota" : category.ToLowerInvariant();
-                    item.content = content ?? "";
-                    item.created_at = DateTime.Now.ToString("yyyy-MM-dd HH:mm");
-                    item.due_iso = dueIso ?? "";
-                    item.completed = false;
-                    _data.items.Add(item);
-                    SaveLocked();
-                    return string.Format("Registrado [{0}] #{1}: {2} {3}", item.category, item.id, item.content,
-                        string.IsNullOrEmpty(item.due_iso) ? "" : "(Prazo: " + item.due_iso + ")");
-                }
-                else if (act == "complete" || act == "done" || act == "delete")
-                {
-                    for (int i = _data.items.Count - 1; i >= 0; i--)
+                    if(act=="list")
                     {
-                        if (_data.items[i].id.Equals(itemId ?? "", StringComparison.OrdinalIgnoreCase) ||
-                            (!string.IsNullOrEmpty(content) && _data.items[i].content.IndexOf(content, StringComparison.OrdinalIgnoreCase) >= 0))
-                        {
-                            string txt = _data.items[i].content;
-                            if (act == "delete") _data.items.RemoveAt(i);
-                            else _data.items[i].completed = true;
-                            SaveLocked();
-                            return "Item atualizado: " + txt;
-                        }
+                        receipt.Check("memory_snapshot",true,"Estado em memoria",_data.items.Count+" itens","local_store_snapshot");
+                        return receipt.Finish(FridaResultStatus.Verified,"memory_snapshot","Memoria consultada: "+_data.items.Count+" itens.",json.Serialize(_data));
                     }
-                    return "Item nao localizado.";
-                }
-                else
-                {
-                    if (_data.items.Count == 0) return "Agenda e memoria da secretaria vazias no momento.";
-                    StringBuilder sb = new StringBuilder();
-                    for (int i = 0; i < _data.items.Count; i++)
+                    SecretaryItem item=null;
+                    if(act=="add" || act=="save" || act=="create")
                     {
-                        SecretaryItem it = _data.items[i];
-                        sb.AppendFormat("- [#{0} | {1} | {2}] {3}{4}\n",
-                            it.id,
-                            it.category,
-                            it.completed ? "CONCLUIDO" : "ATIVO",
-                            it.content,
-                            string.IsNullOrEmpty(it.due_iso) ? "" : " (Agendado: " + it.due_iso + ")");
+                        if(string.IsNullOrWhiteSpace(content))return receipt.Fail("missing_content","Informe o conteudo do item.");
+                        item=new SecretaryItem {id=Guid.NewGuid().ToString("N").Substring(0,12),category=string.IsNullOrWhiteSpace(category)?"nota":category,content=content,created_at=DateTime.Now.ToString("yyyy-MM-dd HH:mm"),due_iso=dueIso ?? ""};
+                        _data.items.Add(item);
                     }
-                    return sb.ToString().Trim();
+                    else if(act=="complete" || act=="done" || act=="delete")
+                    {
+                        var matches=_data.items.FindAll(x=>!string.IsNullOrEmpty(itemId)?string.Equals(x.id,itemId,StringComparison.OrdinalIgnoreCase):!string.IsNullOrWhiteSpace(content) && x.content.IndexOf(content,StringComparison.OrdinalIgnoreCase)>=0);
+                        if(matches.Count!=1)return receipt.Fail("item_not_unique","Item ausente ou ambiguo. Informe um ID unico.");
+                        item=matches[0];if(act=="delete")_data.items.Remove(item);else item.completed=true;
+                    }
+                    else return receipt.Fail("unknown_action","Acao de memoria desconhecida.");
+                    var saved=FridaVerifiedTools.WriteFile(_filePath,json.Serialize(_data),false);
+                    if(saved.Status!=FridaResultStatus.Verified){_data=json.Deserialize<SecretaryData>(before);return receipt.Fail("save_failed",saved.Summary);}
+                    var reloaded=json.Deserialize<SecretaryData>(File.ReadAllText(_filePath,Encoding.UTF8));
+                    bool matchesReload=json.Serialize(reloaded)==json.Serialize(_data);
+                    receipt.Check("persisted_memory_roundtrip",matchesReload,FridaVerifiedTools.Sha256(Encoding.UTF8.GetBytes(json.Serialize(_data))),FridaVerifiedTools.Sha256(Encoding.UTF8.GetBytes(json.Serialize(reloaded))),"json_readback");
+                    if(!matchesReload){_data=json.Deserialize<SecretaryData>(before);return receipt.Fail("readback_mismatch","A memoria persistida difere do estado solicitado.");}
+                    receipt.Put("item_id",item.id);receipt.Put("sha256",FridaVerifiedTools.FileSha256(_filePath));
+                    receipt.MonitorKind="file";receipt.MonitorHash=FridaVerifiedTools.FileSha256(_filePath);
+                    return receipt.Finish(FridaResultStatus.Verified,"persisted_memory_state","Item da memoria salvo e conferido por releitura. ID "+item.id+".","ID: "+item.id);
                 }
+                catch(Exception ex){_data=json.Deserialize<SecretaryData>(before);return receipt.Fail(ex.GetType().Name,"Falha na memoria: "+ex.Message);}
             }
         }
 

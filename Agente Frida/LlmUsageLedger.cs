@@ -57,6 +57,7 @@ namespace FridaAgent
         public string last_error = "";
         public string last_error_at = "";
         public string cooldown_until_utc = "";
+        public bool quota_refresh_pending = false;
         public string provider_limit_note = "";
         public Dictionary<string, string> rate_limits = new Dictionary<string, string>();
         public string rate_limits_at = "";
@@ -72,6 +73,10 @@ namespace FridaAgent
 
     public class ModelRuntimeStats
     {
+        public string DashboardIdentity;
+        public string TeamRoleId;
+        public string TeamStage;
+        public DashboardRoom? TeamLocation;
         public string Bucket;
         public string ModelId;
         public string FriendlyName;
@@ -91,6 +96,8 @@ namespace FridaAgent
         public long TokensOutAllTime;
 
         public List<DateTime> RequestHistoryUtc = new List<DateTime>();
+        /// <summary>Tokens de cada chamada da ultima hora (janelas tokens/min e tokens/h).</summary>
+        public List<KeyValuePair<DateTime, long>> TokenHistoryUtc = new List<KeyValuePair<DateTime, long>>();
         public DateTime CooldownUntilUtc = DateTime.MinValue;
         public string LastErrorReason = "";
         public DateTime LastErrorLocal = DateTime.MinValue;
@@ -98,6 +105,7 @@ namespace FridaAgent
         public bool IsActiveNow = false;
         public double LastLatencyMs = 0;
         public double AvgLatencyMs = 0;
+        public bool QuotaRefreshPending = false;
         public string ProviderLimitNote = "";
         public Dictionary<string, string> RateLimits = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public DateTime RateLimitsAtLocal = DateTime.MinValue;
@@ -105,13 +113,14 @@ namespace FridaAgent
 
         public string ProviderLabel { get { return ModelQuotaGuard.ProviderLabel(Bucket); } }
         public string FunctionLabel { get { return ModelQuotaGuard.FunctionLabel(Bucket); } }
-        public string Key { get { return (Bucket ?? "default") + ":" + ModelId; } }
+        public string Key { get { return DashboardIdentity ?? ((Bucket ?? "default") + ":" + ModelId); } }
 
         /// <summary>Limite diario real (cabecalhos do provedor) ou nota capturada do ultimo erro de cota.</summary>
         public string DailyQuotaDesc
         {
             get
             {
+                if (QuotaRefreshPending) return "Aguardando confirmar limite na API";
                 long rem, lim;
                 if (TryGetDailyRequestQuota(out rem, out lim))
                 {
@@ -155,7 +164,8 @@ namespace FridaAgent
         {
             if (IsActiveNow) return "EM USO";
             if (IsDisabled) return "DESATIVADO";
-            if (DateTime.UtcNow < CooldownUntilUtc) return "COTA EXCEDIDA";
+            if (DateTime.UtcNow < CooldownUntilUtc) return ModelQuotaGuard.IsQuotaError(LastErrorReason) ? "COTA EXCEDIDA" : "INDISPONIVEL";
+            if (QuotaRefreshPending) return "AGUARDANDO VALIDACAO";
             return "PRONTO";
         }
 
@@ -239,6 +249,130 @@ namespace FridaAgent
             return what + per;
         }
 
+        // ------------------------------------------------------------------
+        // Limite x uso atual por janela (min / hora / dia)
+        // ------------------------------------------------------------------
+        private static readonly string[] StdCodes = { "rpm", "rph", "rpd", "tpm", "tph", "tpd" };
+
+        private static int WindowSeconds(char w) { return w == 'm' ? 60 : w == 'h' ? 3600 : w == 'd' ? 86400 : 0; }
+
+        /// <summary>Converte o sufixo de x-ratelimit-limit* em codigo rpm/tpd/... ("" quando a janela nao e conhecida).</summary>
+        private string HeaderCode(string suffix, out string kind)
+        {
+            string s = (suffix ?? "").ToLowerInvariant();
+            bool groq = (Bucket ?? "").IndexOf("groq", StringComparison.OrdinalIgnoreCase) >= 0;
+            kind = s.Contains("audio") ? "a" : s.Contains("token") ? "t" : "r";
+            char w = s.Contains("minute") ? 'm' : s.Contains("hour") ? 'h' : s.Contains("day") ? 'd' : '\0';
+            // Groq documenta: x-ratelimit-*-requests = por dia (RPD); x-ratelimit-*-tokens = por minuto (TPM).
+            if (w == '\0' && groq && kind == "r") w = 'd';
+            if (w == '\0' && groq && kind == "t") w = 'm';
+            return w == '\0' ? "" : kind + "p" + w;
+        }
+
+        private long LocalUsage(string code)
+        {
+            char kind = code[0], w = code[2];
+            if (w == 'd') return kind == 'r' ? TotalRequestsToday : TokensInToday + TokensOutToday;
+            DateTime cutoff = DateTime.UtcNow.AddSeconds(-WindowSeconds(w));
+            if (kind == 'r')
+            {
+                lock (RequestHistoryUtc)
+                {
+                    int n = 0;
+                    for (int i = 0; i < RequestHistoryUtc.Count; i++) if (RequestHistoryUtc[i] >= cutoff) n++;
+                    return n;
+                }
+            }
+            lock (TokenHistoryUtc)
+            {
+                long sum = 0;
+                for (int i = 0; i < TokenHistoryUtc.Count; i++) if (TokenHistoryUtc[i].Key >= cutoff) sum += TokenHistoryUtc[i].Value;
+                return sum;
+            }
+        }
+
+        private static string CodeLabel(string code, string kind)
+        {
+            string what = kind == "a" ? "Áudio s" : kind == "t" ? "Tokens" : "Req";
+            if (string.IsNullOrEmpty(code)) return what;
+            char w = code[2];
+            return what + (w == 'm' ? "/min" : w == 'h' ? "/hora" : "/dia");
+        }
+
+        /// <summary>
+        /// Uso atual e limite de cada janela. Limite vem da API (cabecalhos) ou de model_limits no config.
+        /// Uso: valor do provedor enquanto a leitura dos cabecalhos ainda vale para a janela; depois, contagem local.
+        /// </summary>
+        public List<UsageLimitLine> GetLimitLines()
+        {
+            Dictionary<string, UsageLimitLine> byCode = new Dictionary<string, UsageLimitLine>(StringComparer.OrdinalIgnoreCase);
+            List<UsageLimitLine> extra = new List<UsageLimitLine>();
+            double ageSec = RateLimitsAtLocal == DateTime.MinValue ? double.MaxValue : (DateTime.Now - RateLimitsAtLocal).TotalSeconds;
+            bool sameDay = RateLimitsAtLocal.Date == DateTime.Now.Date;
+
+            Dictionary<string, string> rl = RateLimits;
+            if (rl != null)
+            {
+                lock (rl)
+                {
+                    foreach (KeyValuePair<string, string> kv in rl)
+                    {
+                        string k = kv.Key.ToLowerInvariant();
+                        if (!k.StartsWith("x-ratelimit-limit")) continue;
+                        string suffix = k.Substring("x-ratelimit-limit".Length);
+                        long lim, rem = 0;
+                        if (!long.TryParse(kv.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out lim) || lim <= 0) continue;
+                        string remRaw;
+                        bool hasRem = rl.TryGetValue("x-ratelimit-remaining" + suffix, out remRaw)
+                            && long.TryParse(remRaw, NumberStyles.Any, CultureInfo.InvariantCulture, out rem);
+                        string kind;
+                        string code = HeaderCode(suffix, out kind);
+                        UsageLimitLine line = new UsageLimitLine();
+                        line.Code = code;
+                        line.Label = CodeLabel(code, kind);
+                        line.Limit = lim;
+                        line.Source = "API";
+                        int win = code.Length == 3 ? WindowSeconds(code[2]) : 0;
+                        bool fresh = hasRem && (win == 0 || (ageSec < win && (code[2] != 'd' || sameDay)));
+                        // A leitura do provedor e um retrato do momento da ultima resposta (e inclui outros apps na mesma chave);
+                        // a contagem local inclui chamadas posteriores. Exibe o maior dos dois.
+                        long local = code.Length == 3 && kind != "a" ? LocalUsage(code) : 0;
+                        if (fresh) { line.Used = Math.Max(Math.Max(0, lim - rem), local); line.FromProvider = line.Used > local; }
+                        else line.Used = local;
+                        if (code.Length == 3 && kind != "a") byCode[code] = line; else extra.Add(line);
+                    }
+                }
+            }
+
+            List<UsageLimitLine> result = new List<UsageLimitLine>();
+            for (int i = 0; i < StdCodes.Length; i++)
+            {
+                string code = StdCodes[i];
+                UsageLimitLine line;
+                if (!byCode.TryGetValue(code, out line))
+                {
+                    line = new UsageLimitLine();
+                    line.Code = code;
+                    line.Label = CodeLabel(code, code.Substring(0, 1));
+                    line.Used = LocalUsage(code);
+                    long cfg = ModelQuotaGuard.ConfiguredLimit(Bucket, ModelId, code);
+                    if (cfg > 0) { line.Limit = cfg; line.Source = "config"; }
+                }
+                result.Add(line);
+            }
+            result.AddRange(extra);
+            return result;
+        }
+
+        /// <summary>Janela mais proxima do limite (null quando nenhum limite e conhecido).</summary>
+        public UsageLimitLine PeakLimitLine()
+        {
+            UsageLimitLine best = null;
+            foreach (UsageLimitLine l in GetLimitLines())
+                if (l.HasLimit && (best == null || l.Fraction > best.Fraction)) best = l;
+            return best;
+        }
+
         private static string FormatNum(string raw)
         {
             long n;
@@ -248,6 +382,19 @@ namespace FridaAgent
             }
             return raw;
         }
+    }
+
+    /// <summary>Uma janela de consumo (ex.: Req/min) com uso atual e limite conhecido.</summary>
+    public sealed class UsageLimitLine
+    {
+        public string Code = "";      // rpm, rph, rpd, tpm, tph, tpd ("" = janela nao informada)
+        public string Label = "";     // "Req/min", "Tokens/dia"...
+        public long Used;
+        public long Limit;            // 0 = limite desconhecido
+        public string Source = "";    // "API" (cabecalhos do provedor) ou "config" (model_limits)
+        public bool FromProvider;     // true = uso lido do provedor (inclui outras aplicacoes na mesma chave)
+        public bool HasLimit { get { return Limit > 0; } }
+        public double Fraction { get { return HasLimit ? Math.Max(0, Math.Min(1, Used / (double)Limit)) : 0; } }
     }
 
     /// <summary>Sinalizador global de encerramento: interrompe cascatas de requisicoes ao sair.</summary>
@@ -360,6 +507,7 @@ namespace FridaAgent
                         s.LastUsedLocal = ParseLocal(snap.last_used);
                         s.LastErrorReason = snap.last_error ?? "";
                         s.LastErrorLocal = ParseLocal(snap.last_error_at);
+                        s.QuotaRefreshPending = snap.quota_refresh_pending;
                         s.ProviderLimitNote = snap.provider_limit_note ?? "";
                         s.RateLimitsAtLocal = ParseLocal(snap.rate_limits_at);
                         if (snap.rate_limits != null)
@@ -400,7 +548,7 @@ namespace FridaAgent
                 foreach (KeyValuePair<string, ModelRuntimeStats> kv in Registry)
                 {
                     ModelRuntimeStats s = kv.Value;
-                    if (s.TotalRequestsAllTime == 0 && s.FailuresAllTime == 0 && !s.IsCooldownActive()) continue;
+                    if (s.TotalRequestsAllTime == 0 && s.FailuresAllTime == 0 && !s.IsCooldownActive() && !s.QuotaRefreshPending) continue;
                     ModelUsageSnapshot snap = new ModelUsageSnapshot();
                     snap.bucket = s.Bucket;
                     snap.model = s.ModelId;
@@ -420,6 +568,7 @@ namespace FridaAgent
                     snap.last_error = s.LastErrorReason ?? "";
                     snap.last_error_at = FormatLocal(s.LastErrorLocal);
                     snap.cooldown_until_utc = s.IsCooldownActive() ? s.CooldownUntilUtc.ToString("o", CultureInfo.InvariantCulture) : "";
+                    snap.quota_refresh_pending = s.QuotaRefreshPending;
                     snap.provider_limit_note = s.ProviderLimitNote ?? "";
                     lock (s.RateLimits)
                     {
@@ -477,6 +626,7 @@ namespace FridaAgent
             if (b.Contains("groq")) return "Groq";
             if (b.Contains("cerebras")) return "Cerebras";
             if (b.Contains("openrouter")) return "OpenRouter";
+            if (b == "tts_edge") return "Microsoft Edge";
             if (b.Contains("zai")) return "Zhipu (Z.ai)";
             if (b.Contains("siliconflow") || b.EndsWith("_sf")) return "SiliconFlow";
             return "Google Gemini";
@@ -486,7 +636,8 @@ namespace FridaAgent
         {
             string b = (bucket ?? "").ToLowerInvariant();
             if (b.StartsWith("stt")) return "Transcrição (voz→texto)";
-            if (b.StartsWith("tts")) return b == "tts" ? "Voz da Frida (TTS)" : "Voz da Frida (TTS, chave " + b.Substring(4) + ")";
+            if (b == "tts_edge") return "Voz da Frida (Edge, grátis)";
+            if (b.StartsWith("tts")) return b == "tts" ?"Voz da Frida (TTS)" : "Voz da Frida (TTS, chave " + b.Substring(4) + ")";
             if (b.StartsWith("vis") || b == "vision") return "Visão de tela";
             if (b == "gsearch") return "Pesquisa web";
             if (b == "gemini") return "Cérebro (reserva Gemini)";
@@ -528,7 +679,7 @@ namespace FridaAgent
         /// <summary>Registra um modelo disponivel (aparece no gerenciador mesmo antes do primeiro uso).</summary>
         public static ModelRuntimeStats EnsureRegistered(string bucket, string modelId)
         {
-            if (string.IsNullOrEmpty(modelId)) return null;
+            if (!ModelSelection.IsAllowed(bucket, modelId)) return null;
             lock (Sync)
             {
                 ModelRuntimeStats s = GetOrCreateLocked(bucket, modelId);
@@ -590,6 +741,7 @@ namespace FridaAgent
 
         public static bool IsDisabled(string bucket, string model)
         {
+            if (!ModelSelection.IsAllowed(bucket, model)) return true;
             FridaSettings s = _keySource;
             if (s == null || s.disabled_models == null) return false;
             string key = (bucket ?? "default") + ":" + model;
@@ -717,10 +869,21 @@ namespace FridaAgent
                 stats.TokensOutToday += tokOut;
                 stats.TokensInAllTime += tokIn;
                 stats.TokensOutAllTime += tokOut;
-                lock (stats.RequestHistoryUtc) stats.RequestHistoryUtc.Add(DateTime.UtcNow);
+                DateTime nowUtc = DateTime.UtcNow;
+                lock (stats.RequestHistoryUtc)
+                {
+                    stats.RequestHistoryUtc.Add(nowUtc);
+                    stats.RequestHistoryUtc.RemoveAll(delegate(DateTime t) { return t < nowUtc.AddHours(-1); });
+                }
+                lock (stats.TokenHistoryUtc)
+                {
+                    stats.TokenHistoryUtc.Add(new KeyValuePair<DateTime, long>(nowUtc, tokIn + tokOut));
+                    stats.TokenHistoryUtc.RemoveAll(delegate(KeyValuePair<DateTime, long> t) { return t.Key < nowUtc.AddHours(-1); });
+                }
                 stats.LastLatencyMs = latencyMs;
                 stats.AvgLatencyMs = stats.AvgLatencyMs <= 0 ? latencyMs : (stats.AvgLatencyMs * 0.8 + latencyMs * 0.2);
                 stats.LastUsedLocal = DateTime.Now;
+                CompleteQuotaValidationLocked(stats);
                 stats.IsActiveNow = false;
                 AddEventLocked(bucket, model, true, 200, latencyMs, tokIn, tokOut, note ?? "");
                 _dirty = true;
@@ -789,6 +952,7 @@ namespace FridaAgent
                 ModelRuntimeStats stats = GetOrCreateLocked(bucket, model);
                 lock (stats.RateLimits)
                 {
+                    stats.RateLimits.Clear();
                     foreach (KeyValuePair<string, string> kv in found) stats.RateLimits[kv.Key] = kv.Value;
                 }
                 stats.RateLimitsAtLocal = DateTime.Now;
@@ -820,7 +984,8 @@ namespace FridaAgent
                 stats.LastErrorReason = Truncate("HTTP " + statusCode + ": " + SummarizeError(body), 220);
                 stats.LastErrorLocal = DateTime.Now;
                 stats.IsActiveNow = false;
-                if (!string.IsNullOrEmpty(limitNote)) stats.ProviderLimitNote = limitNote;
+                stats.QuotaRefreshPending = false;
+                if (!string.IsNullOrEmpty(limitNote)) { stats.ProviderLimitNote = limitNote; stats.RateLimitsAtLocal = DateTime.Now; }
 
                 if (cooldown.HasValue && cooldown.Value > TimeSpan.Zero)
                 {
@@ -836,8 +1001,12 @@ namespace FridaAgent
                             if (other != stats && string.Equals(other.ModelId, model, StringComparison.OrdinalIgnoreCase) &&
                                 Array.IndexOf(GoogleBuckets, (other.Bucket ?? "").ToLowerInvariant()) >= 0)
                             {
+                                if (other.IsCooldownActive() && !IsQuotaError(other.LastErrorReason)) continue;
                                 ApplyCooldownLocked(other, until);
-                                if (string.IsNullOrEmpty(other.LastErrorReason)) other.LastErrorReason = stats.LastErrorReason;
+                                other.LastErrorReason = stats.LastErrorReason;
+                                other.LastErrorLocal = stats.LastErrorLocal;
+                                other.QuotaRefreshPending = false;
+                                if (!string.IsNullOrEmpty(limitNote)) { other.ProviderLimitNote = limitNote; other.RateLimitsAtLocal = stats.RateLimitsAtLocal; }
                             }
                         }
                     }
@@ -1016,12 +1185,25 @@ namespace FridaAgent
             FridaSettings s = _keySource;
             if (s == null) return true;
             string b = (bucket ?? "").ToLowerInvariant();
+            if (b == "tts_edge") return true; // Edge-TTS nao usa chave
             if (b.Contains("groq")) return !string.IsNullOrEmpty((s.groq_api_key ?? "").Trim());
             if (b.Contains("cerebras")) return !string.IsNullOrEmpty((s.cerebras_api_key ?? "").Trim());
             if (b.Contains("zai")) return !string.IsNullOrEmpty((s.zai_glm_api_key ?? "").Trim());
             if (b.Contains("siliconflow") || b.EndsWith("_sf")) return !string.IsNullOrEmpty((s.siliconflow_api_key ?? "").Trim());
             if (b.Contains("openrouter")) return !string.IsNullOrEmpty((s.openrouter_api_key ?? "").Trim());
             return !string.IsNullOrEmpty((s.api_key ?? "").Trim());
+        }
+
+        /// <summary>Limite definido pelo operador em model_limits ("bucket:modelo:rpd"); 0 quando ausente.</summary>
+        public static long ConfiguredLimit(string bucket, string model, string code)
+        {
+            FridaSettings s = _keySource;
+            if (s == null || s.model_limits == null || s.model_limits.Count == 0) return 0;
+            long v;
+            string key = (bucket ?? "") + ":" + model + ":" + code;
+            foreach (KeyValuePair<string, long> kv in s.model_limits)
+                if (string.Equals(kv.Key, key, StringComparison.OrdinalIgnoreCase)) { v = kv.Value; return v > 0 ? v : 0; }
+            return 0;
         }
 
         /// <summary>Modelos com chave configurada, ordenados por funcao, provedor e preferencia.</summary>
@@ -1034,7 +1216,7 @@ namespace FridaAgent
                 {
                     ModelRuntimeStats s = kvp.Value;
                     RollDayLocked(s);
-                    if (!HasKeyForBucket(s.Bucket)) continue;
+                    if (!HasKeyForBucket(s.Bucket) || !ModelSelection.IsAllowed(s.Bucket, s.ModelId)) continue;
                     list.Add(s);
                 }
             }
@@ -1066,6 +1248,61 @@ namespace FridaAgent
                 list.Reverse();
                 return list;
             }
+        }
+
+        public static bool IsQuotaError(string reason)
+        {
+            return (reason ?? "").StartsWith("HTTP 429:", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool SameQuotaScope(ModelRuntimeStats a, string bucket, string model)
+        {
+            if (!string.Equals(a.ModelId, model, StringComparison.OrdinalIgnoreCase)) return false;
+            if (string.Equals(a.Bucket, bucket, StringComparison.OrdinalIgnoreCase)) return true;
+            return Array.IndexOf(GoogleBuckets, (a.Bucket ?? "").ToLowerInvariant()) >= 0
+                && Array.IndexOf(GoogleBuckets, (bucket ?? "").ToLowerInvariant()) >= 0;
+        }
+
+        private static void CompleteQuotaValidationLocked(ModelRuntimeStats current)
+        {
+            foreach (ModelRuntimeStats item in Registry.Values)
+            {
+                if (!SameQuotaScope(item, current.Bucket, current.ModelId)) continue;
+                // Sucesso em um endpoint nao libera uma falha de permissao de outro endpoint.
+                if (item != current && item.IsCooldownActive() && !IsQuotaError(item.LastErrorReason)) continue;
+                item.CooldownUntilUtc = DateTime.MinValue;
+                item.QuotaRefreshPending = false;
+                item.ProviderLimitNote = "";
+                item.LastErrorReason = "";
+                item.LastErrorLocal = DateTime.MinValue;
+            }
+        }
+
+        /// <summary>Pedido explicito para reler cotas. Nao altera contadores nem confirma disponibilidade no provedor.</summary>
+        public static int RefreshQuotaLimits(string bucket, string model)
+        {
+            int affected = 0;
+            lock (Sync)
+            {
+                foreach (ModelRuntimeStats item in Registry.Values)
+                {
+                    if (!ModelSelection.IsAllowed(item.Bucket, item.ModelId) || !HasKeyForBucket(item.Bucket)) continue;
+                    if (!string.IsNullOrEmpty(model) && !SameQuotaScope(item, bucket, model)) continue;
+                    if (item.IsActiveNow || IsDisabled(item.Bucket, item.ModelId)) continue;
+                    // Renovar cotas nao resolve credencial invalida, modelo inexistente ou indisponibilidade.
+                    if (item.IsCooldownActive() && !IsQuotaError(item.LastErrorReason)) continue;
+                    item.CooldownUntilUtc = DateTime.MinValue;
+                    item.QuotaRefreshPending = true;
+                    item.ProviderLimitNote = "";
+                    item.RateLimitsAtLocal = DateTime.MinValue;
+                    lock (item.RateLimits) item.RateLimits.Clear();
+                    if (IsQuotaError(item.LastErrorReason)) { item.LastErrorReason = ""; item.LastErrorLocal = DateTime.MinValue; }
+                    affected++;
+                }
+                if (affected > 0) _dirty = true;
+            }
+            Flush();
+            return affected;
         }
 
         public static void ForceClearCooldown(string bucket, string model)
