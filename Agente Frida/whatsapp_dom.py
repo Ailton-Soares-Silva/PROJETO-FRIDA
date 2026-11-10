@@ -26,16 +26,31 @@ def significant_tokens(value):
     return tokens or [t for t in re.split(r"[^a-z0-9]+", normalized(value)) if t]
 
 
-def chat_name_matches(actual, expected):
+def chat_token_overlap(actual, expected):
+    tokens = significant_tokens(expected)
+    if not tokens:
+        return 0, 0
+    actual_tokens = [t for t in re.split(r"[^a-z0-9]+", normalized(actual)) if t]
+    matched = sum(1 for t in tokens if any(at == t or at.startswith(t) for at in actual_tokens))
+    return matched, len(tokens)
+
+
+def chat_name_matches_strict(actual, expected):
     norm_actual = normalized(actual)
     norm_expected = normalized(expected)
     if not norm_expected:
         return True
     if norm_expected in norm_actual or norm_actual == norm_expected:
         return True
-    tokens = significant_tokens(expected)
-    actual_tokens = [t for t in re.split(r"[^a-z0-9]+", norm_actual) if t]
-    return bool(tokens) and all(any(at == t or at.startswith(t) for at in actual_tokens) for t in tokens)
+    matched, total = chat_token_overlap(actual, expected)
+    return total > 0 and matched == total
+
+
+def chat_name_matches(actual, expected):
+    if chat_name_matches_strict(actual, expected):
+        return True
+    matched, total = chat_token_overlap(actual, expected)
+    return total >= 3 and matched >= 2 and matched >= total - 1
 
 
 def digest(value):
@@ -165,15 +180,29 @@ CHAT_ROWS_JS = r"""
 // Conversation rows of the side list. While searching, WhatsApp renders section
 // headings ("Conversas", "Mensagens"...). Message hits carry the chat name in
 // span[title] too, so they must never be counted as conversations.
+// Because #pane-side is virtualized (transform: translateY(...)), DOM order does
+// not match visual order; sort candidates by getBoundingClientRect().top first.
 const pane=document.querySelector('#pane-side'); if(!pane) return null;
 const norm=s=>(s||'').normalize('NFKD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
-// Any title-less row is a section heading ("Conversas", "Grupos em comum", "Mensagens"...);
-// the caller decides which sections hold name matches.
+const raw=[...pane.querySelectorAll('[role="row"], [role="listitem"], h2, [role="heading"]')];
+const items=[];
+let idx=0;
+for(const el of raw){
+ if(el.parentElement && el.parentElement.closest('[role="row"], [role="listitem"]')) continue;
+ const rect=el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+ if(rect && rect.height===0 && rect.width===0 && el.getClientRects && el.getClientRects().length===0) continue;
+ items.push({el:el, top:rect?rect.top:0, idx:idx++});
+}
+items.sort((a,b)=>(Math.abs(a.top-b.top)>1 ? a.top-b.top : a.idx-b.idx));
 let section='list'; const headings=[], out=[], seen=new Set();
-for(const row of pane.querySelectorAll('[role="row"], [role="listitem"]')){
- if(row.parentElement && row.parentElement.closest('[role="row"], [role="listitem"]')) continue;
- const title=row.querySelector('span[title]');
- if(!title){const text=norm(row.innerText); if(text && text.length<40 && !/\n/.test(row.innerText.trim())){section=text;headings.push(text);} continue;}
+for(const item of items){
+ const row=item.el;
+ const title=row.querySelector ? row.querySelector('span[title]') : null;
+ if(!title){
+  const text=norm(row.innerText);
+  if(text && text.length<40 && !/\n/.test((row.innerText||'').trim())){section=text;headings.push(text);}
+  continue;
+ }
  if(row.querySelector('[data-testid^="chatlist-message-"]')||row.closest('[data-testid^="chatlist-message-"]')) continue;
  if(seen.has(row)) continue; seen.add(row);
  out.push({element:row,name:title.getAttribute('title')||title.innerText,section:section,
@@ -235,6 +264,16 @@ class WebUI:
     def visible(self, selector):
         return [x for x in self.driver.find_elements("css selector", selector) if x.is_displayed()]
 
+    def _safe_click(self, element):
+        try:
+            element.click()
+        except Exception as exc:
+            if type(exc).__name__ in ("ElementClickInterceptedException", "ElementNotInteractableException", "MoveTargetOutOfBoundsException"):
+                self.driver.execute_script("arguments[0].scrollIntoView({block:'center'}); arguments[0].click();", element)
+            else:
+                raise
+        return True
+
     def click_label(self, labels, required=True, skip_selected=False):
         values = json.dumps([normalized(x) for x in labels])
         script = """const names=JSON.parse(arguments[0]);const norm=s=>(s||'').normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase().trim();
@@ -263,25 +302,42 @@ class WebUI:
             if normalized(dialog.text).startswith(('novidades do whatsapp web', "what's new in whatsapp web")):
                 close = dialog.find_elements('css selector', 'button[aria-label="Fechar"], button[aria-label="Close"]')
                 if close:
-                    close[0].click()
+                    self._safe_click(close[0])
                     self.wait(lambda: not self.visible('[role="dialog"]'), label="fechamento das novidades")
         close = self.visible('[data-testid="drawer-right"] button[aria-label="Fechar"], [data-testid="drawer-right"] button[aria-label="Close"]')
         if close:
-            close[0].click()
+            self._safe_click(close[0])
             self.wait(lambda: not self.visible('[data-testid="drawer-right"]'), label="fechamento da pesquisa lateral")
         self.click_label(["Fechar pesquisa", "Close search", "Voltar", "Back"], False)
+        clear_btns = self.visible('#side [data-icon="x-alt"], #side [data-testid="x-alt"], #side button[aria-label*="Cancelar"], #side button[aria-label*="Limpar"], #side button[aria-label*="Clear"]')
+        if clear_btns:
+            try:
+                self._safe_click(clear_btns[0])
+            except Exception:
+                pass
         boxes = self.visible('#side [contenteditable="true"][role="textbox"], #side input[role="textbox"]')
         if boxes:
-            boxes[0].click()
-            boxes[0].send_keys("\ue009a")
-            boxes[0].send_keys("\ue003")
-            # Escape inside the side search box closes the recent-searches popover.
-            boxes[0].send_keys("\ue00c")
+            self._clear_box(boxes[0], close_popover=True)
         self.click_label(["Tudo", "Todas", "All"], False, skip_selected=True)
         try:
             self.driver.execute_script("const p=document.querySelector('#pane-side'); if(p) p.scrollTop=0;")
         except Exception:
             pass
+
+    def _clear_box(self, box, close_popover=False):
+        self._safe_click(box)
+        box.send_keys("\ue009a")
+        box.send_keys("\ue003")
+        raw = box.get_attribute("value") or box.text
+        if isinstance(raw, str) and normalized(raw):
+            try:
+                self.driver.execute_script(
+                    "const el=arguments[0]; if(el){if(el.focus)el.focus(); if(document.execCommand){document.execCommand('selectAll',false,null);document.execCommand('delete',false,null);} if('value' in el)el.value='';}",
+                    box)
+            except Exception:
+                pass
+        if close_popover:
+            box.send_keys("\ue00c")
 
     EMPTY_TEXTS = ("Nenhum resultado encontrado", "Nenhuma mensagem encontrada", "Nenhuma conversa",
                    "Nenhuma conversa, contato ou mensagem encontrada", "No results found", "No messages found",
@@ -317,7 +373,13 @@ class WebUI:
 
     def search_active(self, query, within=False):
         selector = '[data-testid="drawer-right"] input[role="textbox"], [data-testid="chat-search"] [role="textbox"], [role="textbox"][data-tab="6"]' if within else '#side input[role="textbox"], #side [contenteditable="true"][role="textbox"]'
-        return any(normalized(box.get_attribute('value') or box.text) == normalized(query) for box in self.visible(selector))
+        target = normalized(query)
+        for box in self.visible(selector):
+            raw = box.get_attribute('value') or box.text
+            val = normalized(raw if isinstance(raw, str) else "")
+            if val == target or (target and target in val):
+                return True
+        return False
 
     def search(self, query, within=False):
         if within:
@@ -325,12 +387,12 @@ class WebUI:
             buttons = self.visible('#main header button[aria-label*="Pesquisar"], #main header button[aria-label*="Search"]') or self.visible('#main header [data-icon="search"]')
             if not buttons:
                 raise self.Failure("dom_changed", "Pesquisa dentro da conversa indisponivel.")
-            self.wait(lambda: buttons[0].click() or True, label="abertura da busca na conversa")
+            self.wait(lambda: self._safe_click(buttons[0]), label="abertura da busca na conversa")
             boxes = self.wait(lambda: self.visible('[data-testid="drawer-right"] input[role="textbox"], [data-testid="chat-search"] [role="textbox"], [role="textbox"][aria-label*="Pesquisar mensagem"], [role="textbox"][aria-label*="Search message"], [role="textbox"][data-tab="6"]'), label="campo de busca da conversa")
         else:
             self.reset_search()
             boxes = self.wait(lambda: self.visible('#side [contenteditable="true"][role="textbox"], #side input[type="text"]'), label="campo de busca")
-        boxes[0].click()
+        self._safe_click(boxes[0])
         boxes[0].send_keys("\ue009a")
         boxes[0].send_keys("\ue003")
         boxes[0].send_keys(query)
@@ -406,20 +468,26 @@ class WebUI:
     def _query_chat_rows(self, query_text):
         self.reset_search()
         boxes = self.wait(lambda: self.visible('#side [contenteditable="true"][role="textbox"], #side input[role="textbox"]'), label="localizador de conversa")
-        boxes[0].click()
-        boxes[0].send_keys("\ue009a")
-        boxes[0].send_keys("\ue003")
+        self._clear_box(boxes[0], close_popover=False)
         boxes[0].send_keys(query_text)
+        tokens = significant_tokens(query_text)
+        started = time.monotonic()
         state = {"signature": None, "since": 0.0}
         def settled():
             if not self.search_active(query_text):
                 return None
             data = self.driver.execute_script(CHAT_ROWS_JS) or {}
             rows = data.get("rows") or []
-            if not data.get("headings") and not self.empty_state():
+            has_headings = bool(data.get("headings"))
+            is_empty = self.empty_state()
+            has_matching_row = bool(rows) and any(
+                any(t in normalized(r.get("name", "")) for t in tokens)
+                for r in rows
+            )
+            now = time.monotonic()
+            if not has_headings and not is_empty and not has_matching_row and (now - started) < 1.2:
                 return None  # still the unfiltered chat list
             signature = tuple((r["name"], r["preview"]) for r in rows)
-            now = time.monotonic()
             if signature != state["signature"]:
                 state["signature"], state["since"] = signature, now
                 return None
@@ -427,33 +495,51 @@ class WebUI:
             return {"rows": rows} if now - state["since"] >= .6 else None
         return self.wait(settled, label="conversas correspondentes")["rows"]
 
+    @staticmethod
+    def _chat_section_rows(rows):
+        return [r for r in rows if r["section"] in ("list", "conversas", "chats")] or \
+               [r for r in rows if r["section"] in ("contatos", "contacts")] or list(rows)
+
     def find_chats(self, name):
         """Conversation rows matching a name: exact matches, else partial/token matches."""
         rows = self._query_chat_rows(name)
         target = normalized(name)
         # Name matches live under "Conversas"; "Contatos" lists address-book entries.
         # "Grupos em comum" (participant matches) and "Mensagens" are never name matches.
-        chats = [r for r in rows if r["section"] in ("list", "conversas", "chats")] or \
-                [r for r in rows if r["section"] in ("contatos", "contacts")]
+        chats = self._chat_section_rows(rows)
+        seen_candidates = {}
+        for r in chats:
+            seen_candidates.setdefault(normalized(r["name"]), r)
         exact = [r for r in chats if normalized(r["name"]) == target]
         for r in exact:
             r["exact"] = True
         if exact:
             return exact
-        partial = [r for r in chats if target and (target in normalized(r["name"]) or chat_name_matches(r["name"], name))]
+        partial = [r for r in chats if target and (target in normalized(r["name"]) or chat_name_matches_strict(r["name"], name))]
+        tokens = significant_tokens(name)
         if not partial:
-            tokens = significant_tokens(name)
             compact = " ".join(tokens)
             if compact and compact != target:
                 rows = self._query_chat_rows(compact)
-                chats = [r for r in rows if r["section"] in ("list", "conversas", "chats")] or \
-                        [r for r in rows if r["section"] in ("contatos", "contacts")]
-                partial = [r for r in chats if chat_name_matches(r["name"], name)]
+                chats = self._chat_section_rows(rows)
+                for r in chats:
+                    seen_candidates.setdefault(normalized(r["name"]), r)
+                partial = [r for r in chats if chat_name_matches_strict(r["name"], name)]
             if not partial and len(tokens) >= 2:
                 rows = self._query_chat_rows(tokens[0] + " " + tokens[1])
-                chats = [r for r in rows if r["section"] in ("list", "conversas", "chats")] or \
-                        [r for r in rows if r["section"] in ("contatos", "contacts")]
-                partial = [r for r in chats if chat_name_matches(r["name"], name)]
+                chats = self._chat_section_rows(rows)
+                for r in chats:
+                    seen_candidates.setdefault(normalized(r["name"]), r)
+                partial = [r for r in chats if chat_name_matches_strict(r["name"], name)]
+        if not partial and seen_candidates:
+            # Relaxed token-overlap fallback (e.g. "qualidade corte a laser" -> "Qualidade Corte e Dobra")
+            scored = []
+            for r in seen_candidates.values():
+                matched, total = chat_token_overlap(r["name"], name)
+                if chat_name_matches(r["name"], name) or (total >= 2 and matched >= 2):
+                    scored.append((matched, r))
+            scored.sort(key=lambda item: -item[0])
+            partial = [item[1] for item in scored]
         for r in partial:
             r["exact"] = False
         return partial
@@ -464,7 +550,7 @@ class WebUI:
         opener = self.visible('#main header [data-testid="conversation-info-header"]') or self.visible('#main header [role="button"][title="Dados do perfil"], #main header [role="button"][title="Profile details"]')
         if not opener:
             raise self.Failure("identity_unverified", "Dados da conversa indisponiveis para distinguir homonimos.")
-        self.wait(lambda: opener[0].click() or True, label="abertura dos dados da conversa")
+        self.wait(lambda: self._safe_click(opener[0]), label="abertura dos dados da conversa")
         text = self.wait(lambda: (lambda t: t if t and normalized(t).startswith(PROFILE_TITLES) else None)(self.driver.execute_script(DRAWER_TEXT_JS)), seconds=8, label="dados da conversa")
         phone = re.search(r'\+\d[\d\s().-]{6,}\d', text)
         if phone:
@@ -474,14 +560,14 @@ class WebUI:
             parts.append("criador:" + normalized(creator.group(1)))
         close = self.visible('[data-testid="drawer-right"] button[aria-label="Fechar"], [data-testid="drawer-right"] button[aria-label="Close"]')
         if close:
-            close[0].click()
+            self._safe_click(close[0])
             self.wait(lambda: not self.visible('[data-testid="drawer-right"]'), label="fechamento dos dados da conversa")
         if not parts:
             raise self.Failure("identity_unverified", "Conversas homonimas sem dado distintivo visivel.")
         return "|".join(parts)
 
     def open_row(self, row, name, kind, discriminate=False):
-        self.wait(lambda: row["element"].click() or True, label="abertura da conversa")
+        self.wait(lambda: self._safe_click(row["element"]), label="abertura da conversa")
         self.wait(lambda: (lambda h: h and normalized(h.get("name")) == normalized(name))(self.header()), label="cabecalho da conversa")
         # A chat may be empty or media-only; wait briefly for rendering, do not require text.
         try:

@@ -20,7 +20,7 @@ namespace FridaAgent
         public static string GroundActivityClaims(string response,bool observed)
         {
             string t=FridaInteractionPolicy.Normalize(response);
-            bool monitoring=Regex.IsMatch(t,@"\b(estou|estamos|continuo|sigo)\b.{0,70}\b(monitorando|acompanhando|processando|lendo|consultando|filtrando|executando|analisando|verificando)\b");
+            bool monitoring=!observed && Regex.IsMatch(t,@"\b(estou|estamos|continuo|sigo)\b.{0,70}\b(monitorando|acompanhando|processando|lendo|consultando|filtrando|executando|analisando|verificando)\b");
             bool promise=Regex.IsMatch(t,@"\b(vou|vamos)\s+(dar uma olhada|filtrar|consultar|acessar|ler|abrir|verificar|executar)\b");
             bool hearing=Regex.IsMatch(t,@"\b(ouvindo|escutando)\s+(perfeitamente|claramente|muito bem)\b");
             bool unsupported=!observed && (HasCompletionClaim(response) || Regex.IsMatch(t,@"\b(li (as mensagens|os grupos|as conversas)|(?:o ambiente|o sistema) esta (estavel|normal|funcionando))\b"));
@@ -34,10 +34,14 @@ namespace FridaAgent
             if(role!="model")return text ?? "";
             string value=text ?? "";int analysis=value.IndexOf("\n\nAnalise do modelo (nao verificada;",StringComparison.Ordinal);
             if(analysis>=0)return value.Substring(0,analysis);
-            return GroundActivityClaims(value,false);
+            bool hasVerifiedEvidence=Regex.IsMatch(value,@"\[M[0-9a-f]{16}\]|\[E\d+\]|Cobertura:\s|Mensagens relevantes para o pedido:|Codigo de saida:\s*0");
+            return GroundActivityClaims(value,hasVerifiedEvidence);
         }
         public const string Instructions = "\nCONFIABILIDADE OPERACIONAL: Respostas anteriores e relatos da equipe nao comprovam execucao automatica. "
             + "O programa emite resultados estruturados com operation_id, status, verified_scope e checks. "
+            + "Use inspect_active_windows para auditar deterministica e rapidamente todas as janelas e abas do Chrome/Edge abertas no computador do operador. "
+            + "Se o operador solicitou abrir ou acessar planilhas, sites ou sistemas web e as abas correspondentes ja estiverem abertas no navegador, o objetivo visual esta cumprido. "
+            + "NUNCA entre em loops tentando caçar credenciais, senhas, tokens OAuth ou arquivos locais quando as planilhas ja estiverem abertas na tela. "
             + "Use verify_artifact para checar existencia, SHA-256 ou integridade de arquivos gerados. "
             + "Somente os retornos reais de ferramentas comprovam observacoes no sistema. "
             + "Nao invente dados ficticios de hardware, processos ou arquivos nao executados. Se uma acao na maquina for solicitada, execute-a diretamente pelas ferramentas. "
@@ -85,8 +89,9 @@ namespace FridaAgent
                 if (Regex.IsMatch(output, @"^(Leitura observada|Arquivo .*salvo|Conteudo anexado|Pasta criada|Arquivo removido|Pasta removida|Listagem observada|Busca observada)"))
                     item.State = FridaObservationState.Confirmed;
             }
-            else if (tool == "open_program_or_url" && Regex.IsMatch(normalized, @"^(iniciado|iniciada|aberto|aberta|aplicativo iniciado|programa iniciado)\b"))
+            else if (tool == "open_program_or_url" && Regex.IsMatch(normalized, @"^(janela|aba|janela/aba|iniciado|iniciada|aberto|aberta|aplicativo iniciado|programa iniciado)\b"))
                 item.State = FridaObservationState.Confirmed;
+            else if (tool == "inspect_active_windows") item.State = FridaObservationState.Confirmed;
             else if (tool == "secretary_memory") item.State = FridaObservationState.Confirmed;
             return item;
         }

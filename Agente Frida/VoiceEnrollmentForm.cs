@@ -6,7 +6,7 @@ using System.Windows.Forms;
 
 namespace FridaAgent
 {
-    // Cadastro no estilo Voice Match: 5 frases curtas (5 s cada), verificacao neural local.
+    // Cadastro guiado: medicao do ambiente, frase e verificacao neural local.
     public sealed class VoiceEnrollmentForm : Form
     {
         private static readonly string[] Phrases =
@@ -23,7 +23,7 @@ namespace FridaAgent
         private readonly ProgressBar _progress = new ProgressBar(), _level = new ProgressBar();
         private readonly Button _record = new Button(), _test = new Button(), _testOther = new Button(), _cancel = new Button(), _clear = new Button();
         private readonly TextBox _reading = new TextBox();
-        private readonly Timer _refresh = new Timer(), _next = new Timer();
+        private readonly Timer _refresh = new Timer();
         private readonly double[][] _phrases = new double[SpeakerVoiceProfile.RequiredPhrases][];
         private int _current;
         private VoiceEnrollmentSession _session;
@@ -38,14 +38,14 @@ namespace FridaAgent
             var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 9 };
             foreach (int h in new[] { 52, 44, 28, 0, 28, 30, 72, 84, 40 }) layout.RowStyles.Add(h == 0 ? new RowStyle(SizeType.Percent, 100) : new RowStyle(SizeType.Absolute, h));
             Controls.Add(layout);
-            layout.Controls.Add(new Label { Dock = DockStyle.Fill, Text = "Leia 5 frases curtas no seu tom e distancia normais (5 s cada). Tudo e analisado neste computador. Ruido de fundo e ignorado automaticamente; evite apenas outra pessoa falando durante o cadastro." }, 0, 0);
+            layout.Controls.Add(new Label { Dock = DockStyle.Fill, Text = "Grave sozinho, sem TV ou conversa. A cada frase: 1 s em silencio, depois ate 7 s para ler. Espere LEIA AGORA e deixe uma pausa no final. A analise e local." }, 0, 0);
 
             var micPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3 };
             micPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); micPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 115)); micPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
             _microphone.Dock = DockStyle.Fill; _microphone.ForeColor = Color.LightSkyBlue; micPanel.Controls.Add(_microphone, 0, 0);
             var chooseMic = MakeButton("Microfone...", 105); chooseMic.Click += (s, e) => ChooseMicrophone(chooseMic); micPanel.Controls.Add(chooseMic, 1, 0);
             var restart = MakeButton("Reiniciar audio", 130);
-            restart.Click += (s, e) => { _voice.RestartTrainingMicrophone(); _session = null; SetStatus("Captacao reiniciada. Aguarde o nivel do microfone aparecer.", Color.LightSkyBlue); RefreshState(); };
+            restart.Click += (s, e) => { ResetDraft(); try { _voice.RestartTrainingMicrophone(); SetStatus("Captacao reiniciada. Inicie as cinco frases novamente; perfil salvo preservado.", Color.LightSkyBlue); } catch (Exception ex) { SetStatus(ex.Message, Color.Salmon); } RefreshState(); };
             micPanel.Controls.Add(restart, 2, 0); layout.Controls.Add(micPanel, 0, 1);
 
             _steps.Dock = DockStyle.Fill; _steps.Font = new Font("Segoe UI", 10.5f, FontStyle.Bold); layout.Controls.Add(_steps, 0, 2);
@@ -69,16 +69,15 @@ namespace FridaAgent
             _record.Click += (s, e) => { if (!_enrolling) { Array.Clear(_phrases, 0, _phrases.Length); _current = 0; _enrolling = true; } StartPhrase(); };
             _test.Click += (s, e) => StartCapture(VoiceCaptureMode.TestOwnVoice);
             _testOther.Click += (s, e) => StartCapture(VoiceCaptureMode.TestOtherVoice);
-            _cancel.Click += (s, e) => { _next.Stop(); _voice.CancelVoiceEnrollment(); RefreshState(); };
+            _cancel.Click += (s, e) => { ResetDraft(); SetStatus("Cadastro cancelado. O perfil salvo foi preservado.", Color.Khaki); ShowIdleText(); RefreshState(); };
             _clear.Click += (s, e) =>
             {
                 try { _voice.VoiceProfile.Clear(); _session = null; _enrolling = false; SetStatus("Perfil apagado. Cadastre sua voz novamente para usar a escuta protegida.", Color.Khaki); }
                 catch (Exception ex) { SetStatus(ex.Message, Color.Salmon); }
                 RefreshState();
             };
-            _next.Interval = 1300; _next.Tick += (s, e) => { _next.Stop(); if (_enrolling && !IsDisposed) StartPhrase(); };
             _refresh.Interval = 120; _refresh.Tick += (s, e) => RefreshState(); _refresh.Start();
-            FormClosed += (s, e) => { _next.Stop(); _voice.CancelVoiceEnrollment(); _refresh.Stop(); _refresh.Dispose(); _next.Dispose(); };
+            FormClosed += (s, e) => { ResetDraft(); _refresh.Stop(); _refresh.Dispose(); };
             SetStatus(_voice.VoiceProtectionStatus, Color.LightSkyBlue);
             ShowIdleText();
             RefreshState();
@@ -88,11 +87,17 @@ namespace FridaAgent
         private static void Configure(Button b, string text, int width) { b.Text = text; b.Width = width; b.Height = 34; b.FlatStyle = FlatStyle.Flat; b.Margin = new Padding(0, 2, 8, 2); }
         private void SetStatus(string text, Color color) { _status.Text = text; _status.ForeColor = color; }
 
+        private void ResetDraft()
+        {
+            _voice.CancelVoiceEnrollment(); _session = null; _reported = true; _enrolling = false; _current = 0;
+            Array.Clear(_phrases, 0, _phrases.Length);
+        }
+
         private void ShowIdleText()
         {
             _reading.Text = _voice.VoiceProfile.IsReady
                 ? "Sua voz ja esta cadastrada. Use os testes abaixo ou refaca o cadastro se mudou de ambiente/microfone."
-                : "Clique em Iniciar cadastro. Cada frase aparece aqui; leia quando a barra comecar a andar.";
+                : "Clique em Iniciar cadastro. Espere em silencio ate aparecer LEIA AGORA. Voce inicia cada frase quando estiver pronto.";
         }
 
         private void StartPhrase()
@@ -108,7 +113,7 @@ namespace FridaAgent
             {
                 _session = _voice.BeginVoiceCapture(mode); _reported = false; _progress.Value = 0;
                 if (mode != VoiceCaptureMode.EnrollPhrase)
-                    _reading.Text = mode == VoiceCaptureMode.TestOwnVoice ? "Fale um comando qualquer, por exemplo:\r\n\"Frida, como esta o transito para o centro?\"" : "Fique em silencio e deixe a TV, um video ou outra pessoa falar por 5 segundos.";
+                    _reading.Text = mode == VoiceCaptureMode.TestOwnVoice ? "Fale um comando qualquer, por exemplo:\r\n\"Frida, como esta o transito para o centro?\"" : "Fique em silencio e deixe a TV, um video ou outra pessoa falar durante os 7 segundos. Silencio sozinho nao comprova a rejeicao de outra voz.";
             }
             catch (Exception ex)
             {
@@ -137,20 +142,18 @@ namespace FridaAgent
             if (missing >= 0)
             {
                 _current = missing;
-                SetStatus(result.Message + " Proxima frase em instantes...", Color.LightGreen);
+                SetStatus(result.Message + " Clique em Gravar frase " + (_current + 1) + " quando estiver pronto.", Color.LightGreen);
                 _reading.Text = "Proxima: " + Phrases[_current];
-                _next.Start();
                 return;
             }
             // Todas as frases gravadas: confere consistencia e salva.
             var list = _phrases.ToList();
             var summary = SpeakerVoiceProfile.Summarize(list);
-            if (summary.WorstIndex >= 0 && summary.LooMean >= 0.55)
+            if (summary.WorstIndex >= 0)
             {
                 _phrases[summary.WorstIndex] = null; _current = summary.WorstIndex;
                 SetStatus("A frase " + (_current + 1) + " ficou diferente das outras (ruido ou outra voz junto). Vamos regravar so ela.", Color.Khaki);
                 _reading.Text = "Proxima: " + Phrases[_current];
-                _next.Start();
                 return;
             }
             try
@@ -175,7 +178,7 @@ namespace FridaAgent
                 foreach (var device in _voice.ListTrainingMicrophones())
                 {
                     var selected = device; var item = new ToolStripMenuItem(device.Name) { Checked = device.DeviceId == _voice.ActiveMicDeviceId };
-                    item.Click += (s, e) => { _voice.SelectTrainingMicrophone(selected.DeviceId, selected.Name); _session = null; SetStatus("Microfone selecionado. Aguarde o nivel aparecer antes de gravar.", Color.LightSkyBlue); RefreshState(); };
+                    item.Click += (s, e) => { ResetDraft(); try { _voice.SelectTrainingMicrophone(selected.DeviceId, selected.Name); SetStatus("Microfone selecionado. Inicie as cinco frases novamente; perfil salvo preservado.", Color.LightSkyBlue); } catch (Exception ex) { SetStatus(ex.Message, Color.Salmon); } RefreshState(); };
                     menu.Items.Add(item);
                 }
                 if (menu.Items.Count == 0) menu.Items.Add(new ToolStripMenuItem("Nenhum microfone encontrado") { Enabled = false });
@@ -194,10 +197,10 @@ namespace FridaAgent
                  !SpeakerVoiceProfile.EngineAvailable ? "verificador indisponivel — " + SpeakerVoiceProfile.EngineError :
                  profile.HasLegacyProfile ? "formato antigo, refaca o cadastro" : "ainda nao cadastrado");
             _steps.Text = _enrolling ? "Frase " + (_current + 1) + " de " + _phrases.Length + "   " + string.Join(" ", _phrases.Select(x => x != null ? "●" : "○")) : profile.IsReady ? "Voz cadastrada ✓" : "Cadastro: 0 de " + _phrases.Length;
-            bool waiting = _next.Enabled;
+            bool waiting = false;
             _record.Text = _enrolling ? "Gravar frase " + (_current + 1) : profile.IsReady ? "Refazer cadastro" : "Iniciar cadastro";
             _record.Enabled = !active && !waiting && SpeakerVoiceProfile.EngineAvailable;
-            _clear.Enabled = !active && !waiting; _cancel.Enabled = active || waiting;
+            _clear.Enabled = !active && !_enrolling; _cancel.Enabled = active || _enrolling;
             _test.Enabled = !active && !waiting && !_enrolling && profile.IsReady; _testOther.Enabled = _test.Enabled;
             double rms = _voice.MicrophoneRms;
             if (_session != null)
@@ -206,7 +209,7 @@ namespace FridaAgent
                 if (active)
                 {
                     rms = state.Rms;
-                    if (state.State == VoiceEnrollmentState.Recording)
+                    if (state.State == VoiceEnrollmentState.Recording || state.State == VoiceEnrollmentState.Calibrating)
                     {
                         _progress.Value = (int)Math.Max(0, Math.Min(100, 100 * state.ElapsedSeconds / Math.Max(1, state.ElapsedSeconds + state.RemainingSeconds)));
                         SetStatus(state.Message + "  (" + Math.Ceiling(state.RemainingSeconds) + " s)", Color.LightSkyBlue);

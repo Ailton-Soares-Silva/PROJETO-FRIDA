@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -21,10 +21,10 @@ namespace FridaAgent
         {using(var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read))using(var hash=SHA256.Create())return BitConverter.ToString(hash.ComputeHash(stream)).Replace("-","").ToLowerInvariant();}
         private static string RequiredPath(string path)
         {if(string.IsNullOrWhiteSpace(path))throw new ArgumentException("Informe um caminho explicito.");return Path.GetFullPath(path);}
-        private static bool BinaryDocument(string path)
+        internal static bool BinaryDocument(string path)
         {return System.Text.RegularExpressions.Regex.IsMatch(Path.GetExtension(path),@"(?i)^\.(doc|xlsx|xls|pdf|pptx|ppt|exe|dll|zip|png|jpg|jpeg|gif|wav|mp3|dwg|sldprt|sldasm)$");}
         private static string NormalizeLines(string value){return (value ?? "").Replace("\r\n","\n").Replace('\r','\n');}
-        private static void ValidateTextFormat(string path,string content)
+        internal static void ValidateTextFormat(string path,string content)
         {
             string ext=Path.GetExtension(path).ToLowerInvariant();
             if(ext==".json")new JavaScriptSerializer {MaxJsonLength=32*1024*1024}.DeserializeObject(content);
@@ -167,27 +167,146 @@ namespace FridaAgent
             catch(Exception ex){return receipt.Fail(ex.GetType().Name,"Falha na verificacao do artefato: "+ex.Message);}
         }
         private sealed class Captured {public string Text;public bool Truncated;}
-        private static Captured Drain(StreamReader reader)
+        private static Captured Drain(StreamReader reader, string streamName)
         {
-            var text=new StringBuilder();char[] buffer=new char[4096];int count;bool truncated=false;
-            while((count=reader.Read(buffer,0,buffer.Length))>0){int keep=Math.Min(count,65536-text.Length);if(keep>0)text.Append(buffer,0,keep);if(keep<count)truncated=true;}
-            return new Captured {Text=text.ToString(),Truncated=truncated};
+            var text = new StringBuilder();
+            var pending = new StringBuilder();
+            bool truncated = false;
+            int value;
+            while ((value = reader.Read()) >= 0)
+            {
+                char character = (char)value;
+                if (text.Length < 65536) text.Append(character); else truncated = true;
+                if (pending.Length < 65536) pending.Append(character);
+                if (character == '\n')
+                {
+                    FridaIdeRuntime.Publish(streamName + " · " + pending.ToString());
+                    pending.Clear();
+                }
+            }
+            if (pending.Length > 0) FridaIdeRuntime.Publish(streamName + " · " + pending.ToString());
+            return new Captured { Text = text.ToString(), Truncated = truncated };
         }
+        public static FridaToolReceipt FileTransferOperation(string operation, string source, string destination)
+        {
+            FridaWorkContext.ThrowIfCancelled();
+            var receipt = new FridaToolReceipt("manage_files", operation, source, true);
+            try
+            {
+                source = RequiredPath(source);
+                destination = RequiredPath(destination);
+                receipt.Target = source;
+                receipt.Put("destination", destination);
+
+                if (string.IsNullOrWhiteSpace(destination))
+                    return receipt.Fail("missing_destination", "Informe o caminho de destino.");
+
+                string destDir = Path.GetDirectoryName(destination);
+                if (!string.IsNullOrEmpty(destDir)) Directory.CreateDirectory(destDir);
+
+                if (operation == "copy")
+                {
+                    if (File.Exists(source))
+                    {
+                        File.Copy(source, destination, true);
+                        bool destExists = File.Exists(destination);
+                        long srcLen = new FileInfo(source).Length;
+                        long destLen = destExists ? new FileInfo(destination).Length : -1;
+                        bool ok = destExists && srcLen == destLen;
+                        receipt.Check("copy_verified", ok, "bytes=" + srcLen, "bytes=" + destLen, "filesystem");
+                        if (!ok) return receipt.Fail("copy_failed", "Falha na cópia: destino não encontrado ou tamanho diferente.");
+                        receipt.MonitorKind = "file";
+                        receipt.MonitorHash = FileSha256(destination);
+                        return receipt.Finish(FridaResultStatus.Verified, "file_copied", "Arquivo copiado com sucesso: " + Path.GetFileName(destination) + " (" + destLen + " bytes).");
+                    }
+                    else if (Directory.Exists(source))
+                    {
+                        DirectoryCopy(source, destination);
+                        bool ok = Directory.Exists(destination);
+                        receipt.Check("dir_copy_verified", ok, "true", ok.ToString(), "filesystem");
+                        return receipt.Finish(ok ? FridaResultStatus.Verified : FridaResultStatus.Failed, "dir_copied", ok ? "Pasta copiada com sucesso: " + destination : "Falha ao copiar pasta.");
+                    }
+                    return receipt.Fail("source_not_found", "Origem não encontrada para cópia: " + source);
+                }
+                else if (operation == "move" || operation == "rename")
+                {
+                    if (File.Exists(source))
+                    {
+                        if (File.Exists(destination)) File.Delete(destination);
+                        File.Move(source, destination);
+                        bool ok = File.Exists(destination) && !File.Exists(source);
+                        receipt.Check("move_verified", ok, "dest_exists && !src_exists", ok.ToString(), "filesystem");
+                        if (!ok) return receipt.Fail("move_failed", "Falha ao mover arquivo.");
+                        receipt.MonitorKind = "file";
+                        receipt.MonitorHash = FileSha256(destination);
+                        return receipt.Finish(FridaResultStatus.Verified, "file_moved", "Arquivo movido/renomeado com sucesso: " + Path.GetFileName(destination) + ".");
+                    }
+                    else if (Directory.Exists(source))
+                    {
+                        Directory.Move(source, destination);
+                        bool ok = Directory.Exists(destination) && !Directory.Exists(source);
+                        receipt.Check("dir_move_verified", ok, "dest_exists && !src_exists", ok.ToString(), "filesystem");
+                        return receipt.Finish(ok ? FridaResultStatus.Verified : FridaResultStatus.Failed, "dir_moved", ok ? "Pasta movida com sucesso: " + destination : "Falha ao mover pasta.");
+                    }
+                    return receipt.Fail("source_not_found", "Origem não encontrada para mover: " + source);
+                }
+                return receipt.Fail("invalid_operation", "Operação de transferência inválida: " + operation);
+            }
+            catch (Exception ex)
+            {
+                return receipt.Fail(ex.GetType().Name, "Falha na transferência de arquivo: " + ex.Message);
+            }
+        }
+
+        private static void DirectoryCopy(string sourceDir, string destDir)
+        {
+            var dir = new DirectoryInfo(sourceDir);
+            if (!dir.Exists) throw new DirectoryNotFoundException("Origem não encontrada: " + sourceDir);
+            Directory.CreateDirectory(destDir);
+            foreach (var file in dir.GetFiles())
+            {
+                string targetPath = Path.Combine(destDir, file.Name);
+                file.CopyTo(targetPath, true);
+            }
+            foreach (var sub in dir.GetDirectories())
+            {
+                string targetPath = Path.Combine(destDir, sub.Name);
+                DirectoryCopy(sub.FullName, targetPath);
+            }
+        }
+
         public static FridaToolReceipt RunPowerShell(string command,int timeoutMs)
         {
+            return RunPowerShell(command, timeoutMs, null);
+        }
+
+        public static FridaToolReceipt RunPowerShell(string command,int timeoutMs, string workingDirectory)
+        {
+            if (FridaSshWorkspace.IsRemote) return FridaSshWorkspace.Run(FridaIdeRuntime.Context.Project, command, timeoutMs);
+            command = FridaIdeRuntime.LocalCommand(command);
+            FridaIdeRuntime.Publish("PowerShell · " + command);
             var receipt=new FridaToolReceipt("run_powershell","execute","powershell.exe",true);
             var cancellation=FridaWorkContext.Token;
             if(cancellation.IsCancellationRequested)return receipt.Finish(FridaResultStatus.Unconfirmed,"user_cancelled","Execucao cancelada antes de iniciar o processo.");
             if(string.IsNullOrWhiteSpace(command))return receipt.Fail("empty_command","Comando vazio; nenhum processo executado.");
             try
             {
-                string wrapped="[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; "+command+"; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }";
+                string wrapped="[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; ";
+                if (!string.IsNullOrWhiteSpace(workingDirectory) && Directory.Exists(workingDirectory))
+                {
+                    wrapped += "Set-Location -LiteralPath '" + workingDirectory.Replace("'", "''") + "'; ";
+                }
+                wrapped += command+"; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }";
                 var info=new ProcessStartInfo("powershell.exe","-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(wrapped))) {
                     UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8};
+                if (!string.IsNullOrWhiteSpace(workingDirectory) && Directory.Exists(workingDirectory))
+                {
+                    info.WorkingDirectory = workingDirectory;
+                }
                 using(var process=Process.Start(info))
                 {
                     receipt.Put("process_id",process.Id);receipt.Put("command_sha256",Sha256(Utf8.GetBytes(command)));
-                    var stdout=Task.Run(()=>Drain(process.StandardOutput));var stderr=Task.Run(()=>Drain(process.StandardError));
+                    var stdout=Task.Run(()=>Drain(process.StandardOutput, "Saída"));var stderr=Task.Run(()=>Drain(process.StandardError, "Erro"));
                     var wait=Stopwatch.StartNew();bool exited=false;
                     while(!(exited=process.WaitForExit(100)) && !cancellation.IsCancellationRequested && wait.ElapsedMilliseconds<timeoutMs){}
                     if(cancellation.IsCancellationRequested)
@@ -208,6 +327,9 @@ namespace FridaAgent
                     if(stdout.IsCompleted && !stdout.IsFaulted){receipt.Put("stdout",stdout.Result.Text);receipt.Put("stdout_truncated",stdout.Result.Truncated);}
                     if(stderr.IsCompleted && !stderr.IsFaulted){receipt.Put("stderr",stderr.Result.Text);receipt.Put("stderr_truncated",stderr.Result.Truncated);}
                     string output="Codigo de saida: "+code+"\n"+(stdout.IsCompleted && !stdout.IsFaulted?stdout.Result.Text:"")+"\n[STDERR]: "+(stderr.IsCompleted && !stderr.IsFaulted?stderr.Result.Text:"");
+                    // Exit code 0 only proves the process ended: compile/test validations and the coding
+                    // pipeline promote it to verified from their own checks (treating it as Verified here
+                    // broke build/test approval and the autonomous coding battery).
                     return receipt.Finish(code==0?FridaResultStatus.ProcessCompleted:FridaResultStatus.Failed,"process_exit_only",code==0?"Processo encerrado com codigo zero. O resultado funcional ainda precisa de verificacao.":"Processo falhou com codigo de saida "+code+". A tarefa nao foi confirmada.",output);
                 }
             }
@@ -234,7 +356,17 @@ namespace FridaAgent
             {
                 using(var process=Process.Start(info))if(process!=null)try{receipt.Put("process_id",process.Id);}catch(InvalidOperationException){}
                 receipt.Check("shell_dispatch",true,"Process.Start sem erro","accepted","windows_process_api");
-                return receipt.Finish(FridaResultStatus.Submitted,"launch_dispatch_only","Solicitacao de abertura enviada ao Windows. A janela e o carregamento do arquivo nao foram verificados.");
+
+                string matchedEvidence;
+                bool verified = FridaWindowVerification.WaitForWindowOrTab(target, 2000, out matchedEvidence);
+                if (verified && !string.IsNullOrEmpty(matchedEvidence))
+                {
+                    receipt.Check("window_or_tab_verified", true, target, matchedEvidence, "win32_uiautomation");
+                    receipt.Put("matched_evidence", matchedEvidence);
+                    return receipt.Finish(FridaResultStatus.Verified, "window_verified", "Janela/aba confirmada no desktop: " + matchedEvidence);
+                }
+
+                return receipt.Finish(FridaResultStatus.Submitted,"launch_dispatch_only","Solicitação de abertura enviada ao Windows; janela ou aba ainda em inicialização.");
             }
             catch(Exception ex){return receipt.Fail(ex.GetType().Name,"Falha na solicitacao de abertura: "+ex.Message);}
         }

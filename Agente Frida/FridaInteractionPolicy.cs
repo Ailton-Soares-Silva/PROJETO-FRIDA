@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
@@ -44,17 +44,24 @@ namespace FridaAgent
 
             "- MONITORES E DISPOSITIVOS REAIS: O operador utiliza a tela de sua estacao de trabalho. NUNCA invente, presuma ou afirme ter jogado janelas ou videos em um 'segundo monitor' ou 'mini player' ficticio a menos que isso seja comprovado e controlado por comandos reais do sistema.\n" +
 
+            "- CONTROLE REAL DE NAVEGADOR E TELA DO OPERADOR: Voce TEM acesso real e direto para abrir sites, paginas de produtos e pesquisas na tela/navegador de Ailton (dj) e para enxergar a tela dele. Quando ele pedir para colocar/mostrar um produto, link ou pesquisa na tela ou no navegador ('acesse meu navegador e coloque na minha tela', 'Chrome e pesquisa sobre...'), use 'web_research' se precisar localizar o link exato e chame OBRIGATORIAMENTE 'open_program_or_url' passando a URL completa 'https://...' (ou 'https://www.google.com/search?q=...') para abrir diretamente no navegador ativo na tela dele. Quando ele pedir para olhar, ler ou inspecionar a tela, chame 'inspect_screen'. NUNCA responda 'nao posso interagir com sua tela' ou 'nao consigo controlar o navegador'.\n" +
+
+            "- CONSULTA DE ESTOQUE, LOJAS E MARCAS NA WEB: Quando o operador perguntar sobre disponibilidade em estoque, unidades, loja, marca ou preco de um produto ('tem unidades disponiveis no estoque na loja X?', 'e a marca Y?'), chame 'web_research' consultando o produto/loja/marca antes de responder. NUNCA diga 'nao tenho acesso ao estoque' sem pesquisar na web; relate fielmente o que consta nas paginas encontradas.\n" +
+
             "- PROIBICAO ABSOLUTA DE DADOS DE HARDWARE E SISTEMA FANTASIOSOS: NUNCA invente porcentagens de CPU, megabytes de RAM consumidos, processos travados ou espaco em disco. Para saber o estado do computador, voce DEVE OBRIGATORIAMENTE chamar 'run_powershell' com comandos reais (ex: Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 5, Get-Volume, etc.). Se nao executou o comando real, NUNCA cite numeros nem diga que verificou.\n" +
 
             "- PROIBICAO ABSOLUTA DE LIMPEZAS E AGENDAMENTOS FANTASIOSOS: NUNCA afirme ter apagado logs, limpado arquivos temporarios, esvaziado lixeira, reiniciado servicos ou agendado desligamento sem ter executado a ferramenta 'run_powershell' com o comando real (ex: shutdown /s /t <segundos>, Remove-Item $env:TEMP\\*). Se o operador pedir agendamento de desligamento, execute 'shutdown /s /t <segundos>'. Se pedir cancelamento, execute 'shutdown /a'.\n" +
 
             "- ABERTURA DE PROGRAMAS COM PROJETO OU ARQUIVO: Quando o operador pedir para abrir um programa e um projeto/arquivo (ex: 'abre o AutoCAD e vai ate o projeto da trava EHR'), localize o arquivo no disco (pesquisando .dwg / .sldprt / etc.) e abra o arquivo diretamente no programa.\n" +
+            "- COMANDOS MULTI-ETAPAS E PEDIDOS COMPOSTOS: Quando o operador solicitar multiplas acoes ou comandos encadeados na mesma frase (por exemplo: 'abre o programa X, depois pesquisa Y e verifica a memoria do PC', ou 'consulte a peca na planilha e mande mensagem no WhatsApp'), voce DEVE executar TODAS as ferramentas necessarias para atender a CADA UMA das etapas solicitadas antes de concluir a resposta. NUNCA execute apenas a primeira acao ignorando as seguintes. Complete todas as tarefas pedidas de ponta a ponta.\n" +
 
             "- ARQUIVOS E DOCUMENTOS: use o caminho solicitado pelo operador ou o diretorio do projeto em trabalho. Sem caminho definido, use Documentos. Grave texto e codigo por manage_files. Para Word, use DOCX nativo. PDF, XLSX e outros formatos exigem ferramenta apropriada. A abertura e uma operacao separada da gravacao.\n" +
 
             "- RESPOSTA FALADA E FLUIDA: Responda de forma direta, fluida, natural, objetiva e inteligente em portugues brasileiro natural (1 a 4 frases claras). NUNCA dite caminhos de arquivos cruos (como C barra Program Data barra...). Quando criar arquivos ou codigos longos, grave-os no computador e explique na fala o que realizou.\n" +
 
-            "- ZERO ALUCINACAO DE EXECUCAO: Somente o programa confirma operacoes pelos resultados estruturados dos adaptadores. Uma chamada de ferramenta, um codigo de saida zero ou uma declaracao do modelo nao comprovam, sozinhos, que o pedido inteiro foi atendido.";
+            "- ZERO ALUCINACAO DE EXECUCAO: Somente o programa confirma operacoes pelos resultados estruturados dos adaptadores. Uma chamada de ferramenta, um codigo de saida zero ou uma declaracao do modelo nao comprovam, sozinhos, que o pedido inteiro foi atendido.\n" +
+
+            "- PROIBICAO ABSOLUTA DE PREENCHIMENTO GENERATIVO DE DADOS DE FABRICANTE E ENGENHARIA: Em pesquisas tecnicas, levantamentos de datasheets, especificacoes de fabricantes, normas, patentes ou engenharia reversa documental, voce PESQUISA, ENCONTRA e COMPILA apenas dados validados nas fontes primarias e nos fabricantes; voce NAO cria, NAO inventa e NAO preenche lacunas com valores estimados, desenhos CAD sinteticos ou tabelas arbitradas apenas para cumprir meta. Quando uma informacao, medida, preco de fabrica ou desenho CAD nao for encontrado nas fontes verificadas, declare explicitamente o que nao foi localizado.";
 
 
 
@@ -84,6 +91,7 @@ namespace FridaAgent
         public static bool IsTechnicalRequest(string text,bool previousTechnical)
         {
             if(FridaRequestIntent.Classify(text).RequiresTools)return true;
+            if(FridaEconomyRouting.NeedsFreshData(text))return true;
             string rest;string t=Normalize(TryStripWake(text,out rest)?rest:text);
             if(IsSecurityOrReverseEngineeringIntent(text)) return true;
             bool fileAction=Regex.IsMatch(t,@"\b(crie|criar|escreva|salve|grave|edite|altere|exclua|apague|abra|copie|mova)\b")
@@ -94,11 +102,12 @@ namespace FridaAgent
 
             bool systemOrHardware = Regex.IsMatch(t, @"\b(hardware|cpu|ram|memoria|memoria|disco|ssd|processo|processos|tarefa|tarefas|consumo|consumindo|desempenho|gpu|placa\s+de\s+video|temperatura|cooler|ventoinha|servico|servicos)\b")
                 || Regex.IsMatch(t, @"\b(desligar|desligue|desligamento|reiniciar|reinicie|suspender|hibernar|agendar\s+desligamento|agende|fechar|feche|mata|matar|kill|finalizar|encerre|encerrar|limpar|limpe|limpeza|otimizar|otimize|temp|temporario|temporarios|lixo|lixeira|cache)\b")
-                || Regex.IsMatch(t, @"\b(janela|janelas|tela|telas|monitor|monitores|segundo\s+monitor|segunda\s+tela|minimizar|minimize|maximizar|maximize|restaurar|fechar\s+janela|volume|mutar|mudo|som|audio|silenciar|silencio)\b");
+                || Regex.IsMatch(t, @"\b(janela|janelas|tela|telas|monitor|monitores|segundo\s+monitor|segunda\s+tela|navegador|chrome|edge|firefox|brave|opera|minimizar|minimize|maximizar|maximize|restaurar|fechar\s+janela|volume|mutar|mudo|som|audio|silenciar|silencio)\b");
 
-            bool technical=Regex.IsMatch(t,@"\b(codigo|programacao|programar|python|javascript|typescript|html|css|sql|csharp|compilador|compilar|compilacao|debug|depurar|bug|bugs|git|github|repositorio|api|apis|script|scripts|software|algoritmo|engenharia|solidworks|autocad|cad|calculo|calcule|calcular|torque|circuito|tensao|dimensionamento|dimensione|dimensionar|abnt|norma|normas|desenho|desenhos|aplicacao|aplicativo|app|arquivo|arquivos|pasta|pastas|diretorio|projeto|projetos|trava|peca|montagem|dwg|sldprt|sldasm|levantamento|documentacao|aprofundamento|busque|buscar|procure|procurar|investigue|investigar|compile|compilar|teste|testar|audite|auditar|pesquise|pesquisar|pesquisa|pesquisas|fontes|noticias|cotacao|atualizado|atualizada|crack|craquear|keygen|patch|patcher|bypass|burlar|cheat|trainer|aimbot|descompilar|x64dbg|ghidra|ida|whatsapp|zap|whats|wpp|cmd|terminal|prompt|powershell|desligar|desligue|desligamento|reiniciar|reinicie|programe|programar)\b")
+            string tDirect = StripSubordinateInfinitives(t);
+            bool technical=Regex.IsMatch(tDirect,@"\b(codigo|programacao|programar|python|javascript|typescript|html|css|sql|csharp|compilador|compilar|compilacao|debug|depurar|bug|bugs|git|github|repositorio|api|apis|script|scripts|software|algoritmo|engenharia|solidworks|autocad|cad|calculo|calcule|calcular|torque|circuito|tensao|dimensionamento|dimensione|dimensionar|abnt|norma|normas|desenho|desenhos|aplicacao|aplicativo|app|arquivo|arquivos|pasta|pastas|diretorio|projeto|projetos|trava|peca|montagem|dwg|sldprt|sldasm|levantamento|documentacao|aprofundamento|busque|buscar|procure|procurar|investigue|investigar|compile|compilar|teste|testar|audite|auditar|pesquise|pesquisar|pesquisa|pesquisas|fontes|noticias|cotacao|estoque|disponivel|disponiveis|atualizado|atualizada|crack|craquear|keygen|patch|patcher|bypass|burlar|cheat|trainer|aimbot|descompilar|x64dbg|ghidra|ida|whatsapp|zap|whats|wpp|cmd|terminal|prompt|powershell|desligar|desligue|desligamento|reiniciar|reinicie|programe|programar)\b")
                 || Regex.IsMatch(text ?? "",@"(?i)\bc(?:#|\+\+)(?!\w)|[a-z]:[\\/]");
-            bool operational=ExplicitAction(text) && Regex.IsMatch(t,@"\b(abra|abrir|abre|inicie|iniciar|execute|executar|rode|rodar|instale|instalar|salve|salvar|grave|gravar|remova|remover|exclua|excluir|apague|apagar|configure|configurar|agende|agendar|lembre|registre|registrar|anote|anotar|renomeie|renomear|mova|mover|copie|copiar)\b");
+            bool operational=ExplicitAction(text) && Regex.IsMatch(tDirect,@"\b(abra|abrir|abre|acesse|acessar|coloque|colocar|mostre|mostrar|inicie|iniciar|execute|executar|rode|rodar|instale|instalar|salve|salvar|grave|gravar|remova|remover|exclua|excluir|apague|apagar|configure|configurar|agende|agendar|lembre|registre|registrar|anote|anotar|renomeie|renomear|mova|mover|copie|copiar)\b");
             if(systemOrHardware || technical || operational || Regex.IsMatch(t,@"\b(modo tecnico|seja tecnica|seja tecnico|reuna os modelos|reuniao entre modelos)\b"))return true;
             if(Regex.IsMatch(t,@"^(oi|ola|bom dia|boa tarde|boa noite|tudo bem|como vai|como voce esta|e voce|vamos conversar|quero conversar|converse comigo|bater papo)\b"))return false;
             return previousTechnical && t.Length<=160 && Regex.IsMatch(t,@"^(sim|nao|continue|continua|pode continuar|me conte mais|me explique|explique melhor|mais detalhes|e |mas |por que|como assim|qual deles|qual delas|mostre|faca isso|tente novamente)\b");
@@ -126,9 +135,9 @@ namespace FridaAgent
         {
             if(string.IsNullOrEmpty(text)) return false;
             string t = text.Trim();
-            if(t.Length > 600) return false;
+            if(t.Length > 800) return false;
             return Regex.IsMatch(t,
-                @"(não posso ajudar|nao posso ajudar|não posso atender|nao posso atender|não posso cumprir|não sou capaz de ajudar|não me é permitido|não posso criar|não posso fornecer|não forneço|nao forneco|i cannot help|i can't help|i'm unable to|i am unable to|cannot assist|policy guidelines|against policy|viola as políticas|viola as diretrizes|termo de uso|direitos autorais|lei de crimes|não forneço métodos|nao forneco metodos|não forneço instruções|nao forneco instrucoes|burlar sistemas|realizar pirataria|práticas ilegais|atividades ilegais|nao ha evidencias verificadas suficientes|i'm sorry, but i can't help|i am sorry, but i cannot|as an ai model|as a helpful and harmless assistant)",
+                @"(não posso ajudar|nao posso ajudar|não posso atender|nao posso atender|não posso cumprir|não sou capaz de ajudar|não me é permitido|não posso criar|não posso fornecer|não forneço|nao forneco|não posso interagir|nao posso interagir|não consigo interagir|nao consigo interagir|não posso controlar|nao posso controlar|não consigo controlar|nao consigo controlar|controlar o navegador|interagir diretamente com a sua tela|interagir com a sua tela|não consigo acessar seu navegador|nao consigo acessar seu navegador|não posso acessar seu navegador|nao posso acessar seu navegador|não consigo ver sua tela|nao consigo ver sua tela|não posso ver sua tela|nao posso ver sua tela|não consigo visualizar sua tela|não tenho acesso ao estoque|nao tenho acesso ao estoque|não tenho acesso à internet|nao tenho acesso a internet|não tenho acesso em tempo real|nao tenho acesso em tempo real|não possuo acesso em tempo real|como um modelo de ia|sou apenas um modelo de|sou um assistente de texto|i cannot help|i can't help|i'm unable to|i am unable to|cannot assist|policy guidelines|against policy|viola as políticas|viola as diretrizes|termo de uso|direitos autorais|lei de crimes|não forneço métodos|nao forneco metodos|não forneço instruções|nao forneco instrucoes|burlar sistemas|realizar pirataria|práticas ilegais|atividades ilegais|nao ha evidencias verificadas suficientes|i'm sorry, but i can't help|i am sorry, but i cannot|as an ai model|as a helpful and harmless assistant)",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         }
 
@@ -185,14 +194,24 @@ namespace FridaAgent
             return !(TryStripWake(text,out rest) && string.IsNullOrWhiteSpace(rest));
         }
 
+        public static string StripSubordinateInfinitives(string normalized)
+        {
+            if(string.IsNullOrEmpty(normalized))return "";
+            string s=Regex.Replace(normalized,@"\b(?:pra|para|de|sem|ao|por|(?:nao\s+)?(?:vai|vao|ia|iam|foi|foram))\s+(?:poder\s+|conseguir\s+)?(?:rodar|executar|abrir|iniciar|usar|utilizar|fazer|ver|ler|mostrar|sair|jogar|testar|funcionar|programar)\b"," ");
+            s=Regex.Replace(s,@"\brodando(?:\s+a\s+\d+\s*fps)?\b"," ");
+            return Regex.Replace(s,@"\s+"," ").Trim();
+        }
+
         public static bool ExplicitAction(string request)
         {
             string stripped;
             string t=Normalize(TryStripWake(request,out stripped)?stripped:request);
-            if(Regex.IsMatch(t,@"^(?:por favor\s+)?(?:(?:voce\s+)?pode(?:ria)?\s+)?(?:me\s+)?(como|explique|explicar|o que|qual|quais|por que|mostre como|quero saber|gostaria de saber|descreva|detalhe)\b")) return false;
+            if(Regex.IsMatch(t,@"^(?:por favor\s+)?(?:(?:voce\s+)?pode(?:ria)?\s+)?(?:me\s+)?(como|explique|explicar|o que|qual|quais|por que|mostre como|quero saber|gostaria de saber|descreva|detalhe)\b")
+                && !Regex.IsMatch(t,@"^(?:o que tem|o que ha|o que esta)\s+na\s+(?:minha\s+)?tela\b")) return false;
             if(Regex.IsMatch(t,@"^(pesquise|pesquisar|busque|buscar|procure|procurar|investigue|investigar|faca (uma )?pesquisas?|realize (uma )?pesquisas?)\b")
-                && !Regex.IsMatch(t,@"\b(e|depois|em seguida)\s+(implemente|execute|rode|crie|construa|corrija|edite|altere|salve|abra|instale|remova|exclua|apague)\b")) return false;
-            return Regex.IsMatch(t,@"\b(abra|abrir|abre|abro|crie|criar|faca|fazer|edite|editar|altere|alterar|execute|executar|rode|rodar|salve|salvar|grave|gravar|instale|instalar|remova|remover|exclua|excluir|apague|apagar|organize|organizar|configure|configurar|implemente|implementar|corrija|corrigir|repare|reparar|agende|agendar|programe|programar|programa|desligar|desligue|desligamento|reiniciar|reinicie|utilize|utilizar|use|usar|consulte|consultar|leia|ler|mostre|mostrar|veja|ver|lembre|registre|registrar|anote|anotar|atualize|atualizar|renomeie|renomear|mova|mover|copie|copiar|construa|construir|desenvolva|desenvolver|monte|montar|escreva|escrever|inicie|iniciar|compile|compilar|teste|testar|verifique|verificar|confira|conferir|revise|revisar|audite|auditar|valide|validar|diagnostique|diagnosticar|conserte|consertar|conclua|concluir|finalize|finalizar|marque|marcar)\b");
+                && !Regex.IsMatch(t,@"\b(e|depois|em seguida)\s+(implemente|execute|rode|crie|construa|corrija|edite|altere|salve|abra|acesse|coloque|mostre|instale|remova|exclua|apague)\b")) return false;
+            string tDirect=StripSubordinateInfinitives(t);
+            return Regex.IsMatch(tDirect,@"\b(abra|abrir|abre|abro|acesse|acessar|coloque|colocar|crie|criar|faca|fazer|edite|editar|altere|alterar|execute|executar|rode|rodar|salve|salvar|grave|gravar|instale|instalar|remova|remover|exclua|excluir|apague|apagar|organize|organizar|configure|configurar|implemente|implementar|corrija|corrigir|repare|reparar|agende|agendar|programe|programar|desligar|desligue|desligamento|reiniciar|reinicie|utilize|utilizar|use|usar|consulte|consultar|leia|ler|mostre|mostrar|veja|ver|olhe|olhar|lembre|registre|registrar|anote|anotar|atualize|atualizar|renomeie|renomear|mova|mover|copie|copiar|construa|construir|desenvolva|desenvolver|monte|montar|escreva|escrever|inicie|iniciar|compile|compilar|teste|testar|verifique|verificar|confira|conferir|revise|revisar|audite|auditar|valide|validar|diagnostique|diagnosticar|conserte|consertar|conclua|concluir|finalize|finalizar|marque|marcar)\b");
         }
 
         public static bool ReadOnlyPowerShell(string command)
@@ -206,6 +225,34 @@ namespace FridaAgent
             if(!active) return false;
             // ACESSO TOTAL DA MAQUINA: qualquer ferramenta pode ser executada sem travas ou restricoes burocraticas
             return true;
+        }
+
+        public static bool IsIrreversibleOperation(string toolName, Dictionary<string, object> args)
+        {
+            if (toolName == "run_powershell")
+            {
+                string cmd = (args != null && args.ContainsKey("command")) ? Convert.ToString(args["command"]) : "";
+                if (Regex.IsMatch(cmd, @"(?i)\b(format-volume|clear-disk|initialize-disk|rmdir\s+/[sq]\s+[a-z]:\\|drop\s+database)\b"))
+                    return true;
+            }
+            if (toolName == "manage_files")
+            {
+                string op = (args != null && args.ContainsKey("operation")) ? Convert.ToString(args["operation"]).Trim().ToLowerInvariant() : "";
+                string path = (args != null && args.ContainsKey("path")) ? Convert.ToString(args["path"]) : "";
+                if (op == "delete" && !string.IsNullOrWhiteSpace(path))
+                {
+                    string clean = path.Trim('"', ' ', '\'').TrimEnd('\\', '/');
+                    if (Regex.IsMatch(clean, @"^(?:[a-z]:|/|[a-z]:\\windows|[a-z]:\\users)$", RegexOptions.IgnoreCase))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        public static bool IsConfirmedByOperator(string request)
+        {
+            if (string.IsNullOrWhiteSpace(request)) return false;
+            return Regex.IsMatch(request, @"(?i)\b(confirmo|confirmar|confirmado|pode apagar|pode formatar|autorizo|prosseguir com a exclusao|tenho certeza)\b");
         }
 
         /// <summary>
@@ -289,13 +336,24 @@ namespace FridaAgent
         /// <summary>Pedido com referencia ("esta acao", "dessas") ganha o turno anterior para a pesquisa/equipe saber do que se trata.</summary>
         public static string WithConversationReference(string request,IList<KeyValuePair<string,string>> history)
         {
-            if(string.IsNullOrWhiteSpace(request) || history==null || history.Count==0 || !DemonstrativeReference.IsMatch(request))return request; // texto original: "está" (verbo) nao casa com "esta"
+            if(string.IsNullOrWhiteSpace(request) || history==null || history.Count==0)return request;
+            string norm=Normalize(request);
+            bool hasRef=DemonstrativeReference.IsMatch(request)
+                || Regex.IsMatch(norm,@"\b(alem|outro|outra|outros|outras|separe|separar|classifique|agrupe|some|somar|calcule|compare|comparar|detalhe|detalhar|explique melhor|mais detalhes|estoque|disponivel|disponiveis|unidades|marca|loja|navegador|minha tela|na tela)\b")
+                || Regex.IsMatch(norm,@"^e (?:o|a|os|as|na|no|da|do|sobre|quanto)\b");
+            if(!hasRef)return request;
             var recent=new List<string>();
+            string lastModel="";
             for(int i=history.Count-1;i>=0 && recent.Count<2;i--)
-                if(history[i].Key=="user" && !string.IsNullOrWhiteSpace(history[i].Value))recent.Insert(0,"\""+Truncate(history[i].Value,200)+"\"");
-            if(recent.Count==0)return request;
-            return request+"\n\n[REFERENCIA DA CONVERSA] Pedidos anteriores do operador: "+string.Join("; ",recent.ToArray())
-                +". Termos como 'esta', 'essa', 'isso' ou 'dessas' se referem ao assunto desses pedidos; identifique-o explicitamente na pesquisa.";
+            {
+                if(history[i].Key=="user" && !string.IsNullOrWhiteSpace(history[i].Value))recent.Insert(0,"\""+Truncate(history[i].Value,240)+"\"");
+                else if(history[i].Key=="model" && string.IsNullOrEmpty(lastModel) && !string.IsNullOrWhiteSpace(history[i].Value))lastModel=Truncate(history[i].Value,1800);
+            }
+            if(recent.Count==0 && string.IsNullOrEmpty(lastModel))return request;
+            string contextBlock="\n\n[REFERENCIA DA CONVERSA] Pedidos anteriores do operador: "+string.Join("; ",recent.ToArray())+".";
+            if(!string.IsNullOrEmpty(lastModel))contextBlock+="\nUltima resposta/dados levantados: "+lastModel;
+            contextBlock+="\nTermos como 'esta', 'essa', 'isso', 'esses', 'alem deste' ou pedidos de separacao/comparacao se referem ao assunto e aos dados acima.";
+            return request+contextBlock;
         }
 
         private static string Truncate(string s,int max){s=Regex.Replace(s ?? "",@"\s+"," ").Trim();return s.Length>max?s.Substring(0,max)+"...":s;}

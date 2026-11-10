@@ -1,14 +1,14 @@
 # PROJETO FRIDA - Agente Autônoma de Bancada & Assistente Executiva Windows 11
 
-A **FRIDA** é uma agente autônoma de elite residente no Windows 11, projetada para operar como parceira técnica de bancada, engenharia, desenvolvimento e secretária executiva. Equipada com interface holográfica flutuante (Spectro Azul 3D), ativação por comando de voz (*Wake-Word* via WinRT), síntese de voz neural natural sem dependência de cotas (Edge Neural) e painel executivo 32-bits estilo retro/Zelda para gestão e auditoria de modelos LLM em tempo real.
+A **FRIDA** é uma agente autônoma de elite residente no Windows 11, projetada para operar como parceira técnica de bancada, engenharia, desenvolvimento e secretária executiva. Equipada com interface holográfica flutuante (Spectro Azul 3D), ativação por comando de voz (*Wake-Word* via Vosk, com alternativa WinRT), síntese de voz neural natural sem dependência de cotas (Edge Neural) e painel executivo 32-bits estilo retro/Zelda para gestão e auditoria de modelos LLM em tempo real.
 
 ---
 
 ## 🌟 Funcionalidades Principais
 
 - **Orbe Holográfico 3D Flutuante (Spectro Azul)**: Gadget animado que reage visualmente aos estados da agente (Ociosa, Ouvindo, Pensando, Executando Ferramentas e Falando).
-- **Ativação por Voz Contínua (*Wake-Word*)**: Motor nativo WinRT para detecção em tempo real de chamadas como *"Frida"*, *"Oi Frida"*, *"Ok Frida"*.
-- **Biometria Vocal & Speaker Lock**: Isolamento da voz do operador via coeficientes cepstrais em escala Mel (MFCC), ignorando áudios e ruídos do ambiente.
+- **Ativação por Voz Contínua (*Wake-Word*)**: Vosk local em português, com alternativa WinRT, para detecção em tempo real de chamadas como *"Frida"*, *"Oi Frida"*, *"Ok Frida"*.
+- **Biometria Vocal & Speaker Lock**: Verificação neural do operador com WeSpeaker/sherpa-onnx e detecção de fala Silero. Vozes sobrepostas podem exigir repetição.
 - **Voz Neural Natural com Zero Cota**: Síntese de fala de alta fidelidade em português brasileiro (*Francisca Neural*), com cache local inteligente e independência total de cotas de APIs comerciais.
 - **Painel Executivo Retro 32-Bit (Zelda)**:
   - **Escritório**: Modelos LLM atualmente operacionais.
@@ -28,11 +28,12 @@ PROJETO FRIDA/
 ├── README.md                       # Documentação principal
 └── Agente Frida/                   # Código-fonte da aplicação C#
     ├── AgentBrainAndTray.cs        # Raciocínio, roteamento e system tray
-    ├── AudioVoiceEngine.cs         # WinRT Wake-word, gravação e síntese TTS
+    ├── AudioVoiceEngine.cs         # Captura, ativação local, gravação e síntese TTS
+    ├── FridaSpeechRecognition.cs   # STT, qualidade, tentativas e métricas
     ├── FridaConfig.cs              # Estrutura e leitura de configurações
     ├── HologramOrbForm.cs          # Renderização do Orbe Holográfico 3D
     ├── LlmUsageLedger.cs           # Controle e auditoria de cotas e telemetria
-    ├── SpeakerVoiceProfile.cs      # Biometria vocal MFCC do operador
+    ├── SpeakerVoiceProfile.cs      # Identificação neural do operador
     ├── ZeldaConsumptionViews.cs    # Gráficos e visualizações do painel
     ├── ZeldaExecutiveLlmDashboard.cs # Gestão e interface 32-bit Zelda
     ├── compilar_frida.bat          # Script de compilação nativa C# (.NET 4.8)
@@ -86,3 +87,7 @@ O ícone da Frida aparecerá na bandeja do sistema (System Tray) e o Orbe Hologr
 ## 📜 Licença
 Projeto de uso pessoal e laboratório de engenharia autônoma.
 
+
+## Reconhecimento de voz 1.3.0.6
+
+Correções, configuração reversível, coleta e comparação com gravações reais: [guia de implementação](Agente%20Frida/IMPLEMENTACAO_VOZ_2026-11-06.md). O ganho de precisão ainda depende da homologação com a voz do operador.

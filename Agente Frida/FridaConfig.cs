@@ -1,4 +1,4 @@
-﻿// language: C# 5 (.NET Framework 4.8), file: FridaConfig.cs, target: Windows 10/11 x64
+// language: C# 5 (.NET Framework 4.8), file: FridaConfig.cs, target: Windows 10/11 x64
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -10,7 +10,8 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Agente Frida - Assistente Holografica Autonoma")]
 [assembly: AssemblyDescription("Agente Pessoal de Voz, Engenharia, Codigo, 3D e Automacao Total")]
 [assembly: AssemblyProduct("Projeto Frida")]
-[assembly: AssemblyVersion("1.2.1.0")]
+[assembly: AssemblyVersion("2.0.0.0")]
+[assembly: AssemblyFileVersion("2.0.0.0")]
 
 namespace FridaAgent
 {
@@ -19,9 +20,14 @@ namespace FridaAgent
     {
         public const string GroqBrain = "openai/gpt-oss-120b";
         public const string CerebrasBrain = "gpt-oss-120b";
+        public const string DeepSeekModel = "deepseek-chat";
+        public const string DeepSeekProModel = "deepseek-v4-pro";
+        public const string DeepSeekR1 = "deepseek-reasoner";
+        public const string KimiK3 = "kimi-k3";
         public const string GeminiComplex = "gemini-3.8-flash";
         public const string GeminiLite = "gemini-3.1-flash-lite";
         public const string Transcription = "whisper-large-v3-turbo";
+        public const string TranscriptionAccurate = "whisper-large-v3";
         public const string Speech = "gemini-3.8-flash-lite-tts";
         // Francisca: ~2x mais rapida que a Thalita para sintetizar (563 caracteres: 10,3 s x 19,3 s em 03/11).
         public const string EdgeSpeech = "pt-BR-FranciscaNeural"; // Edge-TTS gratuito (bucket "tts_edge")
@@ -37,7 +43,19 @@ namespace FridaAgent
             string b = (bucket ?? "").ToLowerInvariant();
             if (b == "oai_groq") return string.Equals(model, GroqBrain, StringComparison.OrdinalIgnoreCase);
             if (b == "oai_cerebras") return string.Equals(model, CerebrasBrain, StringComparison.OrdinalIgnoreCase);
-            if (b == "stt_groq") return string.Equals(model, Transcription, StringComparison.OrdinalIgnoreCase);
+            if (b == "oai_deepseek" || b == "deepseek")
+                return string.Equals(model, DeepSeekModel, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(model, DeepSeekProModel, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(model, "deepseek-v4-pro", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(model, "deepseek-flash", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(model, "deepseek-reasoner", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(model, "deepseek-r1", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(model, DeepSeekR1, StringComparison.OrdinalIgnoreCase);
+            if (b == "oai_kimi" || b == "kimi" || b == "moonshot")
+                return string.Equals(model, KimiK3, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(model, "kimi-k3.1-pro", StringComparison.OrdinalIgnoreCase);
+            if (b == "stt_groq") return string.Equals(model, Transcription, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(model, TranscriptionAccurate, StringComparison.OrdinalIgnoreCase);
             if (b == "tts") return string.Equals(model, Speech, StringComparison.OrdinalIgnoreCase);
             if (b == "tts_edge") return string.Equals(model, EdgeSpeech, StringComparison.OrdinalIgnoreCase);
             if (b == "stt") return string.Equals(model, GeminiLite, StringComparison.OrdinalIgnoreCase);
@@ -55,6 +73,8 @@ namespace FridaAgent
         public string zai_glm_api_key = "";     // Credencial legada preservada, sem rotas ativas.
         public string siliconflow_api_key = ""; // Credencial legada preservada, sem rotas ativas.
         public string cerebras_api_key = "";
+        public string deepseek_api_key = "";
+        public string kimi_api_key = "";
         public string openrouter_api_key = "";  // Credencial legada preservada, sem rotas ativas.
 
         // Google Gemini key (dedicated to Frida's Revision 1 natural female voice Aoede + Vision/Backup)
@@ -91,6 +111,16 @@ namespace FridaAgent
         public int orb_y = -1;
         public double vad_speech_multiplier = 1.45;
         public int min_rms_threshold = 140;
+        // Mantem a referencia acustica ate a homologacao com gravacoes do operador.
+        public double voice_end_silence_seconds = 0.60;
+        public bool voice_vad_energy_gate = true;
+        public string stt_primary_model = ModelSelection.Transcription;
+        public bool stt_quality_retry_enabled = true;
+        public bool stt_vocabulary_enabled = false;
+        public string stt_vocabulary = "Frida, Ailton Soares, MBX, SolidWorks, WhatsApp";
+        public bool stt_gemini_fallback_enabled = true;
+        public int stt_timeout_seconds = 20;
+        public bool voice_metrics_enabled = true;
         // Gerenciador de LLMs: chaves no formato "bucket:modelo" (ex: "oai_groq:openai/gpt-oss-120b")
         public string[] disabled_models = new string[0];
         public string[] preferred_models = new string[0];
@@ -103,6 +133,21 @@ namespace FridaAgent
         // Chave "bucket:modelo:janela" com janela rpm|rph|rpd|tpm|tph|tpd. Ex.: "gemini:gemini-3.1-flash-lite:rpd": 300
         // Limites enviados pela API (Groq/Cerebras) sempre prevalecem sobre estes.
         public Dictionary<string, long> model_limits = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+
+        // Orcamento e limites configuraveis do motor, ferramentas e ciclo autonomo
+        private static FridaSettings _current;
+        public static FridaSettings Current
+        {
+            get { return _current ?? (_current = new FridaSettings()); }
+            set { _current = value; }
+        }
+
+        public int max_execution_rounds = 60;
+        public int max_correction_cycles = 10;
+        public int max_tool_calls_per_task = 120;
+        public int max_task_minutes = 60;
+        public int implementation_max_tokens = 16384;
+        public int complex_work_max_tokens = 32768;
 
         public static FridaSettings LoadOrCreate(string configPath)
         {
@@ -150,13 +195,39 @@ namespace FridaAgent
                 cfg.openrouter_api_key = (Environment.GetEnvironmentVariable("OPENROUTER_API_KEY") ?? "").Trim();
             }
 
-            // Normaliza configuracoes antigas sem reinserir aliases e previews.
-            cfg.brain_models = ModelSelection.BrainModels();
-            cfg.transcribe_model = ModelSelection.GeminiLite;
-            cfg.tts_model = ModelSelection.Speech;
+            // Preserva escolhas explicitas de modelos validos; aplica padroes apenas quando vazios.
+            if (cfg.brain_models == null || cfg.brain_models.Length == 0)
+            {
+                cfg.brain_models = ModelSelection.BrainModels();
+            }
+            else
+            {
+                var explicitModels = new List<string>();
+                foreach (string m in cfg.brain_models)
+                {
+                    if (!string.IsNullOrWhiteSpace(m) && !explicitModels.Contains(m.Trim()))
+                        explicitModels.Add(m.Trim());
+                }
+                cfg.brain_models = explicitModels.Count > 0 ? explicitModels.ToArray() : ModelSelection.BrainModels();
+            }
+
+            if (string.IsNullOrWhiteSpace(cfg.transcribe_model))
+                cfg.transcribe_model = ModelSelection.GeminiLite;
+            if (string.IsNullOrWhiteSpace(cfg.tts_model))
+                cfg.tts_model = ModelSelection.Speech;
+
+            if (cfg.max_execution_rounds <= 0) cfg.max_execution_rounds = 60;
+            if (cfg.max_correction_cycles <= 0) cfg.max_correction_cycles = 10;
+            if (cfg.max_tool_calls_per_task <= 0) cfg.max_tool_calls_per_task = 120;
+            if (cfg.max_task_minutes <= 0) cfg.max_task_minutes = 60;
+            if (cfg.implementation_max_tokens < 2048) cfg.implementation_max_tokens = 16384;
+            if (cfg.complex_work_max_tokens < 4096) cfg.complex_work_max_tokens = 32768;
+            Current = cfg;
+
             cfg.play_startup_greeting = false;
-            cfg.followup_listen_seconds = FridaSessionControl.IdleSeconds;
-            cfg.wake_request_seconds = FridaSessionControl.IdleSeconds;
+            if (cfg.followup_listen_seconds <= 0) cfg.followup_listen_seconds = FridaSessionControl.IdleSeconds;
+            if (cfg.wake_request_seconds <= 0) cfg.wake_request_seconds = FridaSessionControl.IdleSeconds;
+            FridaVoiceOptions.Normalize(cfg);
             if (cfg.disabled_models == null) cfg.disabled_models = new string[0];
             if (cfg.preferred_models == null) cfg.preferred_models = new string[0];
             cfg.model_limits = cfg.model_limits == null

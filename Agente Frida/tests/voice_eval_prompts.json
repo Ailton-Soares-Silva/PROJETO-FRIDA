@@ -1,0 +1,16 @@
+[
+  {"reference":"Frida, consulte o pedido 3213 no WhatsApp.","condition":"normal","operator_voice":true,"critical_terms":["3213","WhatsApp"]},
+  {"reference":"Não envie a mensagem para Hilton.","condition":"negacao","operator_voice":true,"critical_terms":["Não","Hilton"]},
+  {"reference":"Procure o contato Ailton Soares.","condition":"nomes","operator_voice":true,"critical_terms":["Ailton Soares"]},
+  {"reference":"Abra o SolidWorks e consulte o projeto MBX.","condition":"termos_tecnicos","operator_voice":true,"critical_terms":["SolidWorks","MBX"]},
+  {"reference":"Consulte o pedido 3225, não o pedido 3213.","condition":"numeros_negacao","operator_voice":true,"critical_terms":["3225","não","3213"]},
+  {"reference":"Sim.","condition":"resposta_curta","operator_voice":true,"critical_terms":[]},
+  {"reference":"Não.","condition":"resposta_curta","operator_voice":true,"critical_terms":["Não"]},
+  {"reference":"Frida, procure a pasta do projeto e abra o relatório.","condition":"pausa_natural","operator_voice":true,"critical_terms":[]},
+  {"reference":"Consulte o pedido 3213 no WhatsApp.","condition":"voz_baixa","operator_voice":true,"critical_terms":["3213"]},
+  {"reference":"Consulte o pedido 3213 no WhatsApp.","condition":"distante","operator_voice":true,"critical_terms":["3213"]},
+  {"reference":"Consulte o pedido 3213 no WhatsApp.","condition":"ventilador","operator_voice":true,"critical_terms":["3213"]},
+  {"reference":"Obrigado por assistir.","condition":"frase_legitima","operator_voice":true,"critical_terms":[]},
+  {"reference":"","condition":"silencio","operator_voice":false,"critical_terms":[]},
+  {"reference":"","condition":"teclado_sem_fala","operator_voice":false,"critical_terms":[]}
+]

@@ -14,30 +14,55 @@ namespace FridaAgent
     public sealed class FridaWhatsAppRequest
     {
         public string Operation="search",GroupName="",Query="";
+        internal FridaWhatsAppPlan DirectPlan;
+        internal bool InheritChat;
+        internal static bool SessionStatus(string text)
+        {
+            return Regex.IsMatch(text, @"^(?:(?:qual|como|verifique|verificar|veja|cheque|consulte|mostrar|o|a|esta|se|me mostre) )*(?:status|conexao|conectado|pareado)(?: (?:do|da|no|a|o|de|leitor|sessao|conexao|pareamento|whatsapp|web|zap|wpp|whats|esta|ativo|conectado|pareado|agora))*$")
+                || Regex.IsMatch(text, @"^(?:(?:verifique se|o|a|meu|minha|leitor|sessao|do|da) )*(?:whatsapp|zap|whats|wpp)(?: web)? (?:esta |ta |continua )?(?:conectado|pareado|online)$");
+        }
         public static FridaWhatsAppRequest Detect(string request,IEnumerable<KeyValuePair<string,string>> history)
         {
             string t=FridaInteractionPolicy.Normalize(request);
             if(Regex.IsMatch(t,@"\b(na internet|na web|no google|noticias publicas)\b"))return null;
+            bool teamChat=Regex.IsMatch(t,@"\b(falou sobre|mandou sobre|ultimo recado|recado da equipe|recado do|nas mensagens|no grupo|nos grupos|relatou hoje|confirmou o recebimento|pediu alteracao|pessoal do corte|time da montagem|serralheiro mandou)\b");
+            if(!teamChat && Regex.IsMatch(t,@"\b(planilha|planilhas|repositorio|repositório|drive|google drive|cruze|cruzada|cruzado|cruzar|chassi|chassis|implemento|implementos|placa|placas|gestor|cerebro|cérebro|estagiario|estagiário|analista|senior|sênior|engenheiro|equipe|skill|skills|habilidade|habilidades|aprenda|aprender|instale|instalar)\b"))return null;
             if(Regex.IsMatch(t,@"^(?:(?:me )?explique\b|como (?:usar|listar|pesquisar|buscar)\b|nao (?:busque|pesquise|procure|leia)\b)"))return null;
             if(Regex.IsMatch(t,@"^(?:me explique |explique )?(?:como funciona|como funcionam|o que e o whatsapp|como usar)\b")&&!Regex.IsMatch(t,@"\b(leia|pesquise|busque|consulte)\b"))return null;
             if(Regex.IsMatch(t,@"^(?:por favor )?(?:abra|abrir|abre|inicie)\b"))return null;
             bool named=Regex.IsMatch(t,@"\b(whatsapp|whats|wpp|zap)\b");
-            bool implicitChat=Regex.IsMatch(t,@"\b(no grupo|do grupo|nos grupos|na conversa com|da conversa com)\s+[a-z0-9]")
+            bool implicitChat=teamChat
+                || Regex.IsMatch(t,@"\b(no grupo|do grupo|nos grupos|na conversa com|da conversa com|conversa do grupo|grupo importar|falaram no grupo|mandaram no grupo)\b")
                 || Regex.IsMatch(t,@"\b(alguem me mandou|me mandaram|mandou uma mensagem|mandaram mensagem|tem mensagem nova|mensagens nao lidas|quem me mandou mensagem|recebi alguma mensagem)\b")
                 || Regex.IsMatch(t,@"\b(cada mensagem que voce leu|todas as mensagens do grupo|nesse grupo que voce leu)\b");
-            var users=(history??Enumerable.Empty<KeyValuePair<string,string>>()).Where(x=>x.Key=="user").Reverse().Take(4);
+            var historyList=(history??Enumerable.Empty<KeyValuePair<string,string>>()).ToArray();
+            var users=historyList.Where(x=>x.Key=="user").Reverse().Take(4);
+            var models=historyList.Where(x=>x.Key=="model").Reverse().Take(2);
             bool context=users.Any(x=>
             {
                 string u=FridaInteractionPolicy.Normalize(x.Value);
                 return Regex.IsMatch(u,@"\b(whatsapp|whats|wpp|zap)\b")||Regex.IsMatch(u,@"\b(no grupo|do grupo|nos grupos|na conversa com|alguem me mandou)\b");
-            });
-            bool follow=Regex.IsMatch(t,@"^(?:e )?(?:ontem|hoje|anteontem|continue|continuar|mais|ness[ea]|ness[ea]s|nos contatos|nos grupos|na conversa|no grupo|segunda|primeira|[1-9])\b")
-                || Regex.IsMatch(t,@"\b(grupos?|mensagens?|conversa|historico|pecas\s+entregues|pecas\s+produzidas|que\s+voce\s+leu)\b")
-                || FridaWhatsAppPlan.ParseChoice(request)>0;
-            if(!named&&!implicitChat&&!(context&&follow))return null;
+            }) || models.Any(x=>Regex.IsMatch(x.Value??"",@"\[M[a-f0-9]{16}\]|Cobertura:\s*(?:accessible_web_search|loaded_web_history|cache_only)"));
+            bool isLocalSystemCommand=Regex.IsMatch(t,@"\b(powershell|cmd|terminal|compil[ae]|codigo|script|python|csharp|solidworks|autocad|excel|word|navegador|chrome|edge|deslig[au]|reinici[ae]|volume|mudo|print|captur[ae]\s+a\s+tela)\b");
+            bool follow=!isLocalSystemCommand && (
+                Regex.IsMatch(t,@"^(?:e )?(?:ontem|hoje|anteontem|continue|continuar|mais|ness[ea]|ness[ea]s|nos contatos|nos grupos|na conversa|no grupo|segunda|primeira|[1-9])\b")
+                || Regex.IsMatch(t,@"^(?:e\s+)?(?:alem\s+des[st]e|alem\s+diss[oo]|existe\s+mais|tem\s+mais|ha\s+mais|existe\s+outro|tem\s+outro|mais\s+algum|algum\s+outro|separe|classifique|some|somar|compare|detalhe|liste)\b")
+                || Regex.IsMatch(t,@"\b(grupos?|mensagens?|conversa|historico|registros?|pecas\s+entregues|pecas\s+produzidas|dobradeiras?|guilhotinas?|varredeiras?|que\s+voce\s+leu|que\s+encontramos|outro\s+registro|mais\s+algum\s+outro)\b")
+                || FridaWhatsAppPlan.ParseChoice(request)>0);
+            var lastUser=historyList.LastOrDefault(x=>x.Key=="user").Value;
+            string recent=FridaInteractionPolicy.Normalize(lastUser);
+            bool recentWhatsApp=Regex.IsMatch(recent,@"\b(whatsapp|whats|wpp|zap|nos grupos|no grupo)\b");
+            string subject=request;
+            if(context && Regex.IsMatch(t,@"^(ok pode fazer|pode fazer|pode sim|sim|ok)$") &&
+                Regex.IsMatch(FridaInteractionPolicy.Normalize(historyList.LastOrDefault(x=>x.Key=="model").Value),
+                    @"\b(posso|basta solicitar|vou (?:abrir|executar|consultar))\b") &&
+                FridaWhatsAppPlan.SimpleStatus(lastUser,false)!=null)
+                subject=lastUser;
+            var simple = FridaWhatsAppPlan.SimpleStatus(subject,context && users.Any(x=>Regex.IsMatch(FridaInteractionPolicy.Normalize(x.Value),@"\bgrupos\b")));
+            if(!named&&!implicitChat&&!(context&&follow)&&!(simple!=null&&(recentWhatsApp||subject!=request)))return null;
             if(Regex.IsMatch(t,@"\b(pareie|parear|conecte|conectar|vincule|vincular)\b"))return new FridaWhatsAppRequest{Operation="pair"};
-            if(Regex.IsMatch(t,@"\b(status|conectado|conexao|pareado)\b")&&!Regex.IsMatch(t,@"\b(pesquise|busque|procure)\b"))return new FridaWhatsAppRequest{Operation="status"};
-            return new FridaWhatsAppRequest();
+            if(SessionStatus(t))return new FridaWhatsAppRequest{Operation="status"};
+            return new FridaWhatsAppRequest { DirectPlan=simple, InheritChat=simple!=null && !Regex.IsMatch(FridaInteractionPolicy.Normalize(subject),@"\b(grupos|whatsapp|whats|zap|wpp)\b") };
         }
     }
     public static class FridaWhatsAppSource
@@ -56,7 +81,9 @@ namespace FridaAgent
             var expectedTokens=expected.Split(new[]{' '},StringSplitOptions.RemoveEmptyEntries).Where(t=>!ChatStopwords.Contains(t)).ToArray();
             if(expectedTokens.Length==0)expectedTokens=expected.Split(new[]{' '},StringSplitOptions.RemoveEmptyEntries);
             var actualTokens=actual.Split(new[]{' '},StringSplitOptions.RemoveEmptyEntries);
-            return expectedTokens.Length>0&&expectedTokens.All(et=>actualTokens.Any(at=>at==et||at.StartsWith(et,StringComparison.Ordinal)));
+            if(expectedTokens.Length==0)return false;
+            int matched=expectedTokens.Count(et=>actualTokens.Any(at=>at==et||at.StartsWith(et,StringComparison.Ordinal)));
+            return matched==expectedTokens.Length||(expectedTokens.Length>=3&&matched>=2&&matched>=expectedTokens.Length-1);
         }
         private static string Quote(string value)
         {
@@ -68,13 +95,30 @@ namespace FridaAgent
         private static readonly SemaphoreSlim ProfileGate=new SemaphoreSlim(1,1);
         private static FridaSettings _settings=new FridaSettings();
         public static Action<string> Progress;
+        public static Action<string> VisualProgress;
         internal static Func<string,string,string,int,FridaToolReceipt> ReaderRunner=RunReader;
         private static FridaWhatsAppWorker _worker,_cacheWorker;
         // Test seam for the v2 protocol; null in production (owned Python worker).
         internal static Func<Dictionary<string,object>,Dictionary<string,object>> WorkerRunner=null;
         public static void Configure(FridaSettings settings){Shutdown();_settings=settings ?? new FridaSettings();}
         public static void Shutdown(){if(_worker!=null)_worker.Dispose();if(_cacheWorker!=null)_cacheWorker.Dispose();_worker=null;_cacheWorker=null;}
-        private static FridaToolReceipt ExecuteRaw(Dictionary<string,object> args)
+        internal static event Action<string> QrChanged;
+        internal static void PublishQr(string png)
+        {
+            var handler = QrChanged;
+            if (handler != null) handler(png);
+        }
+        internal static FridaToolReceipt ObserveConnection(bool pair)
+        {
+            if (!ProfileGate.Wait(0)) return new FridaToolReceipt("read_whatsapp", "status", "", false).Fail("profile_busy", "Leitor ocupado. Aguarde a consulta terminar.");
+            try
+            {
+                using (FridaIdeRuntime.Enter(new FridaIdeContext { Silent = true }))
+                    return ExecuteRaw(new Dictionary<string,object> {{"operation",pair ? "pair" : "status"},{"embedded",true}});
+            }
+            finally { ProfileGate.Release(); }
+        }
+        internal static FridaToolReceipt ExecuteRaw(Dictionary<string,object> args)
         {
             bool cache=FridaWhatsAppWorker.Value(args,"operation")=="search_cache";
             Dictionary<string,object> result;
@@ -83,7 +127,18 @@ namespace FridaAgent
             {
                 FridaWhatsAppWorker worker;
                 lock(_settings){if(cache){if(_cacheWorker==null)_cacheWorker=new FridaWhatsAppWorker(_settings);worker=_cacheWorker;}else{if(_worker==null)_worker=new FridaWhatsAppWorker(_settings);worker=_worker;}}
-                result=worker.Execute(args,Progress);
+                Action<string> progressHandler = FridaIdeRuntime.Silent
+                    ? (Action<string>)(message =>
+                    {
+                        if (!string.IsNullOrWhiteSpace(message))
+                        {
+                            FridaIdeRuntime.Publish("WhatsApp · " + message);
+                            var visual = VisualProgress;
+                            if (visual != null) visual(message);
+                        }
+                    })
+                    : Progress;
+                result=worker.Execute(args,progressHandler);
             }
             return Parse(FridaWhatsAppWorker.Value(args,"operation"),FridaWhatsAppWorker.Value(args,"chat_name"),new JavaScriptSerializer{MaxJsonLength=32*1024*1024}.Serialize(result),0);
         }
@@ -97,8 +152,10 @@ namespace FridaAgent
                 var result=ExecuteRaw(args);
                 if(result.ErrorCode=="needs_auth"&&operation!="pair")
                 {
-                    if(Progress!=null)Progress("O WhatsApp precisa de conexao. Leia o QR Code na janela do leitor.");
-                    var paired=ExecuteRaw(new Dictionary<string,object>{{"operation","pair"}});
+                    if (FridaIdeRuntime.Silent) FridaIdeRuntime.RequestPairing();
+                    else if(Progress!=null)Progress("O WhatsApp precisa de conexao. Leia o QR Code na janela do leitor.");
+                    var paired=ExecuteRaw(new Dictionary<string,object>{{"operation","pair"},{"embedded",FridaIdeRuntime.Silent}});
+                    if (FridaIdeRuntime.Silent) FridaIdeRuntime.FinishPairing(paired.Summary);
                     if(paired.Status!=FridaResultStatus.Verified)return paired;
                     FridaWorkContext.ThrowIfCancelled();result=ExecuteRaw(args);
                 }
@@ -234,6 +291,20 @@ namespace FridaAgent
             bool self=match.ContainsKey("self")&&object.Equals(match["self"],true);
             return FridaWhatsAppWorker.Value(match,"candidate")+". "+(string.IsNullOrEmpty(name)?preview:name+(self?" (você)":"")+(preview.Length>0?" — "+preview:""));
         }
+        // "de hoje", "de ontem", "de 02/11/2026" or "de 02/11 a 04/11/2026" (date_to is exclusive).
+        internal static string PeriodLabel(string from,string to)
+        {
+            DateTimeOffset start,end;
+            if(!DateTimeOffset.TryParse(from,System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.None,out start)
+                ||!DateTimeOffset.TryParse(to,System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.None,out end)||start>=end)return "do período";
+            var local=TimeSpan.FromHours(-3);
+            DateTime first=start.ToOffset(local).Date,last=end.ToOffset(local).AddTicks(-1).Date,today=FridaWhatsAppPlan.LocalToday().Date;
+            if(first!=last)return "de "+first.ToString("dd/MM",System.Globalization.CultureInfo.InvariantCulture)+" a "+last.ToString("dd/MM/yyyy",System.Globalization.CultureInfo.InvariantCulture);
+            if(first==today)return "de hoje";
+            if(first==today.AddDays(-1))return "de ontem";
+            if(first==today.AddDays(-2))return "de anteontem";
+            return "de "+first.ToString("dd/MM/yyyy",System.Globalization.CultureInfo.InvariantCulture);
+        }
         private static string ReplyV2(FridaToolReceipt receipt,Dictionary<string,object> root)
         {
             if(receipt.Operation=="status"||receipt.Operation=="pair")return receipt.Summary;
@@ -276,7 +347,9 @@ namespace FridaAgent
             bool syncing=FridaWhatsAppWorker.Value(coverage,"reason")=="history_sync_in_progress"
                 ||(coverage.TryGetValue("issues",out issueList)&&issueList is IEnumerable&&!(issueList is string)&&((IEnumerable)issueList).Cast<object>().Any(x=>Convert.ToString(x)=="history_sync_in_progress"));
             if(syncing)lines.Add("O WhatsApp ainda está sincronizando mensagens antigas com o celular; a busca pode não incluir todo o histórico. Repita a consulta mais tarde.");
-            lines.Add("Cobertura: "+FridaWhatsAppWorker.Value(coverage,"scope")+"; estado: "+FridaWhatsAppWorker.Value(coverage,"reason")+". Registros recebidos: "+rows.Length+".");
+            if(receipt.Operation=="read_recent_groups")
+                lines.Add("Amostra "+PeriodLabel(FridaWhatsAppWorker.Value(coverage,"date_from"),FridaWhatsAppWorker.Value(coverage,"date_to"))+": "+rows.Length+" mensagens recuperadas em "+FridaWhatsAppWorker.Value(coverage,"groups_read")+" grupos conferidos. Foram considerados até seis grupos recentes e até dez mensagens de cada um no período.");
+            else lines.Add("Cobertura: "+FridaWhatsAppWorker.Value(coverage,"scope")+"; estado: "+FridaWhatsAppWorker.Value(coverage,"reason")+". Registros recebidos: "+rows.Length+".");
             if(!string.IsNullOrEmpty(FridaWhatsAppWorker.Value(root,"cursor")))lines.Add("Diga 'continue' para retomar esta pesquisa.");
             return string.Join("\n",lines);
         }

@@ -35,6 +35,15 @@
   "orb_y": -1,
   "vad_speech_multiplier": 1.45,
   "min_rms_threshold": 140,
+  "voice_end_silence_seconds": 0.60,
+  "voice_vad_energy_gate": true,
+  "stt_primary_model": "whisper-large-v3-turbo",
+  "stt_quality_retry_enabled": true,
+  "stt_vocabulary_enabled": false,
+  "stt_vocabulary": "Frida, MBX, SolidWorks, WhatsApp",
+  "stt_gemini_fallback_enabled": true,
+  "stt_timeout_seconds": 20,
+  "voice_metrics_enabled": true,
   "disabled_models": [],
   "preferred_models": [],
   "speaker_lock_enabled": true,
@@ -43,5 +52,13 @@
   "model_limits": {},
   "whatsapp_cache": "",
   "whatsapp_chromedriver": "",
-  "whatsapp_routes_file": "whatsapp_routes.local.json"
+  "whatsapp_routes_file": "whatsapp_routes.local.json",
+  "model_catalog": {
+    "technician": ["kimi-k3", "deepseek-v4", "groq-brain", "cerebras-brain", "gemini-complex"],
+    "manager": ["deepseek-v4", "deepseek-r1", "gemini-complex", "groq-brain"],
+    "senior_researcher": ["deepseek-r1", "gemini-complex", "deepseek-v4"],
+    "analyst": ["cerebras-brain", "groq-brain", "deepseek-v4", "gemini-lite"],
+    "assistant": ["deepseek-chat", "groq-brain", "cerebras-brain", "gemini-lite"],
+    "secretary": ["gemini-lite", "groq-brain", "cerebras-brain"]
+  }
 }

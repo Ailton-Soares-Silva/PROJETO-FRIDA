@@ -226,7 +226,7 @@ namespace FridaAgent
 
 
 
-    public class FridaBrain
+    public partial class FridaBrain
 
 
 
@@ -255,10 +255,12 @@ namespace FridaAgent
 
 
         private readonly List<KeyValuePair<string, string>> _chatMemory = new List<KeyValuePair<string, string>>();
+        private string _workingMemorySummary = "";
 
 
 
         private readonly Dictionary<string, string> _installedShortcuts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private FridaDevelopmentTaskState _currentDevTaskState;
 
 
 
@@ -832,7 +834,7 @@ namespace FridaAgent
 
 
 
-        private async Task<string> ProcessTeamRequestAsync(string userText, Func<string, Task> progress, bool useTeam,string inputChannel="text")
+        public async Task<string> ProcessTeamRequestAsync(string userText, Func<string, Task> progress, bool useTeam,string inputChannel="text")
 
 
 
@@ -885,7 +887,7 @@ namespace FridaAgent
                     {
                         _chatMemory.Add(new KeyValuePair<string,string>("user",userText));
                         _chatMemory.Add(new KeyValuePair<string,string>("model",LastResponse));
-                        while(_chatMemory.Count>16)_chatMemory.RemoveAt(0);
+                        TrimChatMemoryWithSummary();
                     }
                     CaptureConversation(conversation,"response_generated");return LastResponse;
                 }
@@ -1029,7 +1031,7 @@ namespace FridaAgent
 
                     _chatMemory.Add(new KeyValuePair<string, string>("model", LastResponse));
 
-                    while (_chatMemory.Count > 16) _chatMemory.RemoveAt(0);
+                    TrimChatMemoryWithSummary();
 
                 }
 
@@ -1239,7 +1241,7 @@ namespace FridaAgent
 
 
 
-                return await ExecuteTechnicalRequestAsync(instruction, null);
+                return await ExecuteTechnicalRequestWithRoleAsync(instruction, null, "technician");
 
 
 
@@ -1279,7 +1281,7 @@ namespace FridaAgent
 
 
 
-                return ExecuteTechnicalRequestAsync(query, null);
+                return ExecuteTechnicalRequestWithRoleAsync(query, null, "assistant");
 
 
 
@@ -1332,13 +1334,28 @@ namespace FridaAgent
 
 
                 + "\nMemoria ativa: " + (_secretary == null ? "Sem memoria ativa." : _secretary.BuildBriefContext())
-
-
-
+                + "\n" + FridaMemoryStore.GetOneLineIndex(8)
+                + (string.IsNullOrEmpty(_workingMemorySummary) ? "" : "\nResumo do historico recente comprimido: " + _workingMemorySummary)
                 + "\nAtendimento em andamento para o operador: " + (_activeUserRequest ?? "");
+        }
 
-
-
+        private void TrimChatMemoryWithSummary()
+        {
+            while (_chatMemory.Count > 16)
+            {
+                KeyValuePair<string, string> dropped = _chatMemory[0];
+                _chatMemory.RemoveAt(0);
+                if (!string.IsNullOrEmpty(dropped.Value) && dropped.Value.Length > 10)
+                {
+                    string snippet = dropped.Value.Length > 100 ? dropped.Value.Substring(0, 100) + "..." : dropped.Value;
+                    snippet = snippet.Replace("\r", " ").Replace("\n", " ");
+                    _workingMemorySummary = (_workingMemorySummary + " [" + dropped.Key + ": " + snippet + "]").Trim();
+                    if (_workingMemorySummary.Length > 1000)
+                    {
+                        _workingMemorySummary = _workingMemorySummary.Substring(_workingMemorySummary.Length - 1000);
+                    }
+                }
+            }
         }
 
 
@@ -1645,6 +1662,88 @@ namespace FridaAgent
 
             });
 
+            tools.Add(new Dictionary<string, object>
+            {
+                { "type", "function" },
+                { "name", "fetch_url" },
+                { "description", "Faz download e extrai o texto limpo de uma pagina web ou documentacao online (HTML/texto). Util para inspecionar tutoriais, documentacao de bibliotecas, manuais e artigos de referencia com comprovacao via hash SHA-256." },
+                { "parameters", new Dictionary<string, object>
+                    {
+                        { "type", "object" },
+                        { "properties", new Dictionary<string, object>
+                            {
+                                { "url", new Dictionary<string, object> { { "type", "string" }, { "description", "URL completa iniciando com https:// ou http://" } } },
+                                { "max_chars", new Dictionary<string, object> { { "type", "integer" }, { "description", "Limite maximo de caracteres a extrair (padrao 32000)" } } }
+                            }
+                        },
+                        { "required", new string[] { "url" } }
+                    }
+                }
+            });
+
+            tools.Add(new Dictionary<string, object>
+            {
+                { "type", "function" },
+                { "name", "web_search" },
+                { "description", "Pesquisa na web e retorna uma lista estruturada de resultados contendo titulo, URL e resumo de cada pagina encontrada. Ideal para descobrir fontes antes de aprofundar com fetch_url." },
+                { "parameters", new Dictionary<string, object>
+                    {
+                        { "type", "object" },
+                        { "properties", new Dictionary<string, object>
+                            {
+                                { "query", new Dictionary<string, object> { { "type", "string" }, { "description", "Termos da busca na web." } } },
+                                { "max_results", new Dictionary<string, object> { { "type", "integer" }, { "description", "Numero de resultados a retornar (padrao 5)." } } }
+                            }
+                        },
+                        { "required", new string[] { "query" } }
+                    }
+                }
+            });
+
+            tools.Add(new Dictionary<string, object>
+            {
+                { "type", "function" },
+                { "name", "memory" },
+                { "description", "Gerencia a memoria persistente de longo prazo (perfil do operador, fatos, preferencias, contexto de projetos, decisoes operacionais e licoes aprendidas). Permite listar, pesquisar, ler, gravar, atualizar e esquecer memorias." },
+                { "parameters", new Dictionary<string, object>
+                    {
+                        { "type", "object" },
+                        { "properties", new Dictionary<string, object>
+                            {
+                                { "action", new Dictionary<string, object> { { "type", "string" }, { "description", "Operacao a realizar: 'list', 'search', 'read', 'write', 'update' ou 'forget'." } } },
+                                { "query", new Dictionary<string, object> { { "type", "string" }, { "description", "Termo de busca quando action='search'." } } },
+                                { "type", new Dictionary<string, object> { { "type", "string" }, { "description", "Tipo da memoria ao gravar/atualizar: 'profile', 'fact', 'preference', 'project_context', 'operational_decision', 'user_lesson'." } } },
+                                { "title", new Dictionary<string, object> { { "type", "string" }, { "description", "Titulo descritivo da memoria para write ou update." } } },
+                                { "content", new Dictionary<string, object> { { "type", "string" }, { "description", "Conteudo detalhado da memoria." } } },
+                                { "id", new Dictionary<string, object> { { "type", "string" }, { "description", "Identificador da memoria para read, update ou forget." } } },
+                                { "tags", new Dictionary<string, object> { { "type", "string" }, { "description", "Tags opcionais separadas por virgula." } } }
+                            }
+                        },
+                        { "required", new string[] { "action" } }
+                    }
+                }
+            });
+
+            tools.Add(new Dictionary<string, object>
+            {
+                { "type", "function" },
+                { "name", "manage_skills" },
+                { "description", "Gerencia e executa as habilidades operacionais (skills) aprendidas pela Frida. Permite listar skills disponiveis ('list'), carregar instrucoes completas sob demanda ('read'), verificar ('verify') ou acionar ('execute')." },
+                { "parameters", new Dictionary<string, object>
+                    {
+                        { "type", "object" },
+                        { "properties", new Dictionary<string, object>
+                            {
+                                { "operation", new Dictionary<string, object> { { "type", "string" }, { "description", "Operacao: 'list', 'read', 'verify' ou 'execute'." } } },
+                                { "skill_id", new Dictionary<string, object> { { "type", "string" }, { "description", "Identificador unico da skill (obrigatorio para read, verify e execute)." } } },
+                                { "arguments", new Dictionary<string, object> { { "type", "string" }, { "description", "Argumentos em JSON ou texto para a execucao da skill." } } }
+                            }
+                        },
+                        { "required", new string[] { "operation" } }
+                    }
+                }
+            });
+
 
 
             tools.Add(new Dictionary<string, object>
@@ -1908,9 +2007,9 @@ namespace FridaAgent
 
 
 
-            if (toolName == "web_research") return "Consultando fontes.";
+            if (toolName == "web_research" || toolName == "web_search") return "Consultando fontes.";
 
-
+            if (toolName == "fetch_url") return "Lendo a página.";
 
             if (toolName == "inspect_screen") return "Verificando a tela.";
 
@@ -1926,6 +2025,10 @@ namespace FridaAgent
 
             if (toolName == "secretary_memory") return "Consultando ou atualizando o registro solicitado.";
 
+            if (toolName == "memory") return "Acessando a memória persistente.";
+
+            if (toolName == "manage_skills") return "Consultando as habilidades da Frida.";
+
 
 
             return "Executando a verificacao solicitada.";
@@ -1936,7 +2039,13 @@ namespace FridaAgent
 
 
 
-        private async Task<string> ExecuteTechnicalRequestAsync(string userText, Func<string, Task> onBeforeFirstTaskAsync)
+        private Task<string> ExecuteTechnicalRequestAsync(string userText, Func<string, Task> onBeforeFirstTaskAsync)
+        {
+            string role = (_taskPlan != null && _taskPlan.Steps != null && _taskPlan.Steps.Count > 0) ? _taskPlan.Steps[0].Role : "technician";
+            return ExecuteTechnicalRequestWithRoleAsync(userText, onBeforeFirstTaskAsync, role);
+        }
+
+        private async Task<string> ExecuteTechnicalRequestWithRoleAsync(string userText, Func<string, Task> onBeforeFirstTaskAsync, string roleOrStrength)
 
 
 
@@ -1998,7 +2107,7 @@ namespace FridaAgent
 
             // Modo economia tambem passa pelo FastBrain gratuito (Groq/Cerebras); o Gemini so entra se ele falhar ou recusar.
 
-            string fastProviderReply = (internResearch || isFileCreationIntent) ? null : await TryProcessViaFastOpenAiProvidersAsync(userText, notifyTaskOnceAsync);
+            string fastProviderReply = (internResearch || isFileCreationIntent) ? null : await TryProcessViaFastOpenAiProvidersAsync(userText, notifyTaskOnceAsync, roleOrStrength);
 
 
 
@@ -2904,7 +3013,7 @@ namespace FridaAgent
 
 
 
-        private Task<List<OpenAiProviderRoute>> BuildActiveOpenAiRoutesAsync()
+        private Task<List<OpenAiProviderRoute>> BuildActiveOpenAiRoutesAsync(string roleOrStrength = null)
 
 
 
@@ -3016,6 +3125,11 @@ namespace FridaAgent
 
 
 
+            if (!string.IsNullOrWhiteSpace(roleOrStrength))
+            {
+                return Task.FromResult(FridaModelCatalog.OrderRoutesForRole(routes, roleOrStrength, _settings));
+            }
+
             return Task.FromResult(ModelQuotaGuard.OrderByPreference(routes,
 
 
@@ -3032,7 +3146,7 @@ namespace FridaAgent
 
 
 
-        private async Task<string> TryProcessViaFastOpenAiProvidersAsync(string userText, Func<string, Task> notifyTaskOnceAsync)
+        private async Task<string> TryProcessViaFastOpenAiProvidersAsync(string userText, Func<string, Task> notifyTaskOnceAsync, string roleOrStrength = null)
 
 
 
@@ -3040,7 +3154,7 @@ namespace FridaAgent
 
 
 
-            List<OpenAiProviderRoute> routes = await BuildActiveOpenAiRoutesAsync();
+            List<OpenAiProviderRoute> routes = await BuildActiveOpenAiRoutesAsync(roleOrStrength);
 
 
 
@@ -3299,6 +3413,8 @@ namespace FridaAgent
 
 
                             stickyRoute = route;
+
+                            FridaTeamState.SetTechnicalRoute(route.ProviderBucket, route.ModelId);
 
 
 
@@ -4115,7 +4231,7 @@ namespace FridaAgent
 
                             }
 
-
+                            _providerBudget.ReleaseFailedAttempt(route.ProviderBucket);
 
                             BootLogger.Log("FastBrain FAIL [" + route.ProviderBucket + " / " + route.ModelId + "] HTTP " + code + ": " + Truncate(body, 190));
 
@@ -4155,11 +4271,9 @@ namespace FridaAgent
 
                 {
 
-
+                    _providerBudget.ReleaseFailedAttempt(route.ProviderBucket);
 
                     ModelQuotaGuard.RecordException(route.ProviderBucket, route.ModelId, ex.Message);
-
-
 
                     BootLogger.Log("FastBrain EXC [" + route.ProviderBucket + " / " + route.ModelId + "]: " + ex.Message);
 
@@ -5283,21 +5397,10 @@ namespace FridaAgent
 
 
         private static bool ChangesToolState(string name, Dictionary<string,object> args)
-
-
-
         {
-
-
-
+            if (name == "apply_patch") return true;
             if (name == "manage_files") return Regex.IsMatch(GetArg(args,"operation"), @"^(write|append|mkdir|delete)$", RegexOptions.IgnoreCase);
-
-
-
             return name == "open_program_or_url" || name=="secretary_memory" && GetArg(args,"action")!="list" || name == "run_powershell" && !FridaTaskRouting.IsVerificationCommand(GetArg(args,"command"));
-
-
-
         }
 
 
@@ -5361,6 +5464,12 @@ namespace FridaAgent
         {
             FridaWorkContext.ThrowIfCancelled();
             if(!_requestActive)return "BLOQUEADO: nenhum atendimento tecnico ativo.";
+            if (FridaInteractionPolicy.IsIrreversibleOperation(fnName, args) && !FridaInteractionPolicy.IsConfirmedByOperator(_activeUserRequest))
+            {
+                return new FridaToolReceipt(fnName, "confirmation_required", GetArg(args, "target"), false)
+                    .Fail("confirmation_required", "Esta operacao e irreversivel e requer sua confirmacao direta antes de prosseguir. Responda confirmando explicitamente para executar.")
+                    .ToJson();
+            }
             await _toolExecutionGate.WaitAsync(FridaWorkContext.Token);
             try
             {
@@ -5373,7 +5482,17 @@ namespace FridaAgent
                 _operationResults[key]=pending;_currentLedger.Add(pending);
                 var receipt=await ExecuteSingleToolCoreAsync(fnName,args);
                 _operationResults[key]=receipt;pending.SupersededBy=receipt.OperationId;
-                if(ChangesToolState(fnName,args) && (receipt.IsAction || receipt.Status==FridaResultStatus.Verified))_toolStateVersion++;
+                if(ChangesToolState(fnName,args) && (receipt.IsAction || receipt.Status==FridaResultStatus.Verified))
+                {
+                    _toolStateVersion++;
+                    List<string> staleExecutionKeys = new List<string>();
+                    foreach(var k in _operationResults.Keys)
+                    {
+                        if(k.StartsWith("run_powershell|", StringComparison.Ordinal) || k.StartsWith("run_project_validation|", StringComparison.Ordinal))
+                            staleExecutionKeys.Add(k);
+                    }
+                    for(int sk = 0; sk < staleExecutionKeys.Count; sk++) _operationResults.Remove(staleExecutionKeys[sk]);
+                }
                 string result=RegisterReceipt(receipt,args);FridaRuntimeHealth.OperationFinished(key);
                 _currentLedger.Save(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"ExecutionReports"));
                 FridaWorkContext.ThrowIfCancelled();return result;
@@ -5459,6 +5578,39 @@ namespace FridaAgent
 
                 }
 
+                if(fnName=="apply_patch")
+                {
+                    string raw = GetArg(args, "path");
+                    string path = ResolveFriendlyPath(raw);
+                    string target = GetArg(args, "target_text");
+                    string replacement = GetArg(args, "replacement_text");
+                    string sha = GetArg(args, "expected_before_sha256");
+                    return await Task.Run(() => FridaCodingTools.ApplySurgicalPatch(path, target, replacement, sha, _currentDevTaskState));
+                }
+                if(fnName=="read_code")
+                {
+                    string raw = GetArg(args, "path");
+                    string path = ResolveFriendlyPath(raw);
+                    int start = GetArgInt(args, "start_line", 1);
+                    int end = GetArgInt(args, "end_line", start + 100);
+                    return await Task.Run(() => FridaCodingTools.ReadCodeLines(path, start, end, _currentDevTaskState));
+                }
+                if(fnName=="search_symbols")
+                {
+                    string raw = GetArg(args, "root_path");
+                    string path = string.IsNullOrWhiteSpace(raw) ? (FridaIdeRuntime.Context != null && FridaIdeRuntime.Context.Project != null ? FridaIdeRuntime.Context.Project.Root : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)) : ResolveFriendlyPath(raw);
+                    string query = GetArg(args, "query");
+                    string pattern = GetArg(args, "file_pattern");
+                    int maxMatches = GetArgInt(args, "max_matches", 50);
+                    return await Task.Run(() => FridaCodingTools.SearchSymbols(path, query, pattern, maxMatches, _currentDevTaskState));
+                }
+                if(fnName=="inspect_project")
+                {
+                    string raw = GetArg(args, "path");
+                    string path = string.IsNullOrWhiteSpace(raw) ? (FridaIdeRuntime.Context != null && FridaIdeRuntime.Context.Project != null ? FridaIdeRuntime.Context.Project.Root : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)) : ResolveFriendlyPath(raw);
+                    return await Task.Run(() => FridaCodingTools.InspectProject(path, GetArgInt(args, "max_depth", 2), _currentDevTaskState));
+                }
+
                 if(fnName=="open_program_or_url")
 
                 {
@@ -5481,6 +5633,36 @@ namespace FridaAgent
 
                 }
 
+                if(fnName=="fetch_url")
+                {
+                    string targetUrl = GetArg(args,"url");
+                    int maxChars = 32000;
+                    if (args.ContainsKey("max_chars")) int.TryParse(Convert.ToString(args["max_chars"]), out maxChars);
+                    var receipt = await FridaWebTools.FetchUrlAsync(targetUrl, _http, maxChars);
+                    if (receipt.Status == FridaResultStatus.Verified)
+                    {
+                        string refLabel = "[E" + (_requestReferences.Count + 1) + "] Pagina web: " + targetUrl;
+                        _requestReferences.Add(refLabel);
+                        string sha = receipt.Data.ContainsKey("sha256") ? Convert.ToString(receipt.Data["sha256"]) : "";
+                        _teamEvidence.Add(refLabel + " (SHA-256: " + sha + ")");
+                    }
+                    return receipt;
+                }
+
+                if(fnName=="web_search")
+                {
+                    string query = GetArg(args,"query");
+                    int maxResults = 5;
+                    if (args.ContainsKey("max_results")) int.TryParse(Convert.ToString(args["max_results"]), out maxResults);
+                    var receipt = await FridaWebTools.WebSearchAsync(query, _http, _settings.api_key, _settings, maxResults);
+                    if (receipt.Status == FridaResultStatus.Verified)
+                    {
+                        string refLabel = "[E" + (_requestReferences.Count + 1) + "] Busca web: " + query;
+                        _requestReferences.Add(refLabel);
+                    }
+                    return receipt;
+                }
+
                 if(fnName=="inspect_screen")
 
                     return FridaVerifiedTools.Analysis(fnName,"visual_interpretation",await CaptureAndInspectScreenAsync(GetArg(args,"question")),"screen_snapshot");
@@ -5490,6 +5672,43 @@ namespace FridaAgent
                     return _secretary==null?new FridaToolReceipt(fnName,"memory","",false).Fail("unavailable","Memoria da secretaria indisponivel.")
 
                         :_secretary.ExecuteVerifiedAction(GetArg(args,"action"),GetArg(args,"category"),GetArg(args,"content"),GetArg(args,"due_iso"),GetArg(args,"item_id"));
+
+                if(fnName=="memory")
+                {
+                    return FridaMemoryStore.ExecuteToolAction(args, _brainConversationId);
+                }
+
+                if(fnName=="manage_skills")
+                {
+                    string op = GetArg(args, "operation").Trim().ToLowerInvariant();
+                    string skillId = GetArg(args, "skill_id");
+                    if (op == "list")
+                    {
+                        var list = FridaSkillRegistry.GetAll();
+                        var rec = new FridaToolReceipt(fnName, op, "catalog", false);
+                        rec.Put("skills", list.Select(delegate(FridaSkillEntry s) {
+                            return new Dictionary<string, object> {
+                                { "id", s.Id }, { "name", s.Name }, { "description", s.Description },
+                                { "complexity", s.Complexity.ToString() }, { "verified", s.Verified },
+                                { "execution_count", s.ExecutionCount }, { "is_instructional", s.IsInstructional }
+                            };
+                        }).ToArray());
+                        return rec.Finish(FridaResultStatus.Verified, "skills_listed", list.Count + " skill(s) no catalogo.");
+                    }
+                    if (op == "read")
+                    {
+                        return FridaSkillRegistry.ReadSkill(skillId);
+                    }
+                    if (op == "verify")
+                    {
+                        return FridaSkillRegistry.VerifySkill(skillId);
+                    }
+                    if (op == "execute")
+                    {
+                        return await FridaSkillRegistry.ExecuteSkillAsync(skillId, GetArg(args, "arguments"));
+                    }
+                    return new FridaToolReceipt(fnName, op, skillId, false).Fail("invalid_operation", "Operacao '" + op + "' nao suportada para manage_skills.");
+                }
 
                 return new FridaToolReceipt(fnName,"unknown","",false).Fail("unknown_tool","Ferramenta desconhecida; nenhuma operacao executada.");
 
@@ -6089,9 +6308,11 @@ namespace FridaAgent
 
                 string clean = p.TrimStart('.', '/', '\\');
 
+                string baseDir = (FridaIdeRuntime.Context != null && FridaIdeRuntime.Context.Project != null && !string.IsNullOrWhiteSpace(FridaIdeRuntime.Context.Project.Root))
+                    ? FridaIdeRuntime.Context.Project.Root
+                    : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
 
-
-                p = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), clean);
+                p = Path.Combine(baseDir, clean);
 
 
 
@@ -7846,8 +8067,9 @@ private static string ResolveKnownExecutable(string name)
 
 
         private const int HotkeyIdActivate = 6801;
-
-        private const int HotkeyIdLastConversation=6802;
+        private const int HotkeyIdLastConversation = 6802;
+        private const int HotkeyIdIde = 6803;
+        private FridaIdeForm _ideForm;
 
 
 
@@ -8240,9 +8462,12 @@ private static string ResolveKnownExecutable(string name)
 
             miCall.Click += delegate { ActivateOrStop(); };
 
-
-
             _trayMenu.Items.Add(miCall);
+
+            ToolStripMenuItem miIde = new ToolStripMenuItem("Abrir Chat IDE Frida (Ctrl+Alt+F)");
+            miIde.Font = new Font("Segoe UI Semibold", 9.25f, FontStyle.Bold);
+            miIde.Click += delegate { ShowIdeForm(); };
+            _trayMenu.Items.Add(miIde);
 
             var miStop=new ToolStripMenuItem("Parar agora");miStop.Click+=delegate{HandlePriorityControl(FridaControlCommand.Stop);};_trayMenu.Items.Add(miStop);
 
@@ -8851,14 +9076,11 @@ private static string ResolveKnownExecutable(string name)
 
 
             bool hkOk = SystemWin32.RegisterHotKey(Handle, HotkeyIdActivate, SystemWin32.MOD_NONE, SystemWin32.VK_F4);
-
-
-
             BootLogger.Log("RegisterHotKey(F4) = " + hkOk);
-
-            bool auditHotkey=SystemWin32.RegisterHotKey(Handle,HotkeyIdLastConversation,SystemWin32.MOD_CONTROL|0x0001,(int)Keys.L);
-
-            BootLogger.Log("RegisterHotKey(Ctrl+Alt+L) = "+auditHotkey);
+            bool auditHotkey = SystemWin32.RegisterHotKey(Handle, HotkeyIdLastConversation, SystemWin32.MOD_CONTROL | 0x0001, (int)Keys.L);
+            BootLogger.Log("RegisterHotKey(Ctrl+Alt+L) = " + auditHotkey);
+            bool ideHotkey = SystemWin32.RegisterHotKey(Handle, HotkeyIdIde, SystemWin32.MOD_CONTROL | 0x0001, (int)Keys.F);
+            BootLogger.Log("RegisterHotKey(Ctrl+Alt+F) = " + ideHotkey);
 
 
 
@@ -9141,13 +9363,14 @@ private static string ResolveKnownExecutable(string name)
 
 
         protected override void WndProc(ref Message m)
-
-
-
         {
+            if (m.Msg == SystemWin32.WM_HOTKEY && m.WParam.ToInt32() == HotkeyIdIde)
+            {
+                ShowIdeForm();
+                return;
+            }
 
             if(m.Msg==SystemWin32.WM_HOTKEY && m.WParam.ToInt32()==HotkeyIdLastConversation)
-
             {ShowLastResponseDialog();return;}
 
 
@@ -9485,10 +9708,34 @@ private static string ResolveKnownExecutable(string name)
                 finally {if(epoch==Volatile.Read(ref _interactionEpoch))_processingTurn=false;}
 
             });
-
         }
 
-
+        public void ShowIdeForm()
+        {
+            try
+            {
+                if (_ideForm == null || _ideForm.IsDisposed)
+                {
+                    _ideForm = new FridaIdeForm(
+                        async (text, project, audio) =>
+                        {
+                            return await _brain.ProcessTeamRequestAsync(text, null, true, "ide");
+                        },
+                        () => { HandlePriorityControl(FridaControlCommand.Stop); },
+                        text => { Task.Run(async () => { try { await _voice.SpeakResponseAsync(text, false); } catch { } }); },
+                        () => { HandlePriorityControl(FridaControlCommand.Off); },
+                        _settings, _configPath, _voice, null);
+                }
+                if (!_ideForm.Visible) _ideForm.Show();
+                if (_ideForm.WindowState == FormWindowState.Minimized) _ideForm.WindowState = FormWindowState.Normal;
+                _ideForm.BringToFront();
+                _ideForm.Activate();
+            }
+            catch (Exception ex)
+            {
+                BootLogger.Log("Falha ao abrir Chat IDE: " + ex.Message);
+            }
+        }
 
         private void ShowLastResponseDialog()
 
@@ -10574,8 +10821,8 @@ private static string ResolveKnownExecutable(string name)
 
 
             try { SystemWin32.UnregisterHotKey(Handle, HotkeyIdActivate); } catch { }
-
             try { SystemWin32.UnregisterHotKey(Handle, HotkeyIdLastConversation); } catch { }
+            try { SystemWin32.UnregisterHotKey(Handle, HotkeyIdIde); } catch { }
 
 
 

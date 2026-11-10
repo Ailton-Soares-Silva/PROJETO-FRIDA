@@ -164,7 +164,12 @@ namespace FridaAgent
         {
             if (IsActiveNow) return "EM USO";
             if (IsDisabled) return "DESATIVADO";
-            if (DateTime.UtcNow < CooldownUntilUtc) return ModelQuotaGuard.IsQuotaError(LastErrorReason) ? "COTA EXCEDIDA" : "INDISPONIVEL";
+            if (DateTime.UtcNow < CooldownUntilUtc)
+            {
+                if ((LastErrorReason ?? "").IndexOf("402", StringComparison.OrdinalIgnoreCase) >= 0 || (LastErrorReason ?? "").IndexOf("insufficient balance", StringComparison.OrdinalIgnoreCase) >= 0)
+                    return "SALDO ESGOTADO";
+                return ModelQuotaGuard.IsQuotaError(LastErrorReason) ? "COTA EXCEDIDA" : "INDISPONIVEL";
+            }
             if (QuotaRefreshPending) return "AGUARDANDO VALIDACAO";
             return "PRONTO";
         }
@@ -623,6 +628,8 @@ namespace FridaAgent
         public static string ProviderLabel(string bucket)
         {
             string b = (bucket ?? "").ToLowerInvariant();
+            if (b.Contains("deepseek")) return "DeepSeek";
+            if (b.Contains("kimi") || b.Contains("moonshot")) return "Moonshot / Kimi";
             if (b.Contains("groq")) return "Groq";
             if (b.Contains("cerebras")) return "Cerebras";
             if (b.Contains("openrouter")) return "OpenRouter";
@@ -635,6 +642,8 @@ namespace FridaAgent
         public static string FunctionLabel(string bucket)
         {
             string b = (bucket ?? "").ToLowerInvariant();
+            if (b.Contains("deepseek")) return "Estagiário / Pesquisa";
+            if (b.Contains("kimi") || b.Contains("moonshot")) return "Engenheiro Técnico";
             if (b.StartsWith("stt")) return "Transcrição (voz→texto)";
             if (b == "tts_edge") return "Voz da Frida (Edge, grátis)";
             if (b.StartsWith("tts")) return b == "tts" ?"Voz da Frida (TTS)" : "Voz da Frida (TTS, chave " + b.Substring(4) + ")";
@@ -648,6 +657,12 @@ namespace FridaAgent
         {
             string b = (bucket ?? "").ToLowerInvariant();
             string m = (model ?? "").ToLowerInvariant();
+            if (b.Contains("kimi") || b.Contains("moonshot")) return "scout";
+            if (b.Contains("deepseek"))
+            {
+                if (m.Contains("pro") || m.Contains("reasoner") || m.Contains("manager")) return "scholar";
+                return "scribe";
+            }
             if (b.StartsWith("tts")) return m.Contains("lite") ? "oracle" : "priestess";
             if (b.StartsWith("stt")) return "oracle";
             if (b.Contains("groq")) return m.Contains("qwen") ? "tactician" : "scout";
@@ -992,6 +1007,22 @@ namespace FridaAgent
                     DateTime until = DateTime.UtcNow.Add(cooldown.Value);
                     ApplyCooldownLocked(stats, until);
 
+                    // Se for 402 (saldo insuficiente), propaga cooldown a todos os modelos do mesmo bucket/provedor
+                    if (statusCode == 402 || body.IndexOf("insufficient balance", StringComparison.OrdinalIgnoreCase) >= 0 || body.IndexOf("insufficient_balance", StringComparison.OrdinalIgnoreCase) >= 0 || body.IndexOf("payment required", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        foreach (KeyValuePair<string, ModelRuntimeStats> kv in Registry)
+                        {
+                            ModelRuntimeStats other = kv.Value;
+                            if (other != stats && string.Equals(other.Bucket, bucket, StringComparison.OrdinalIgnoreCase))
+                            {
+                                ApplyCooldownLocked(other, until);
+                                other.LastErrorReason = stats.LastErrorReason;
+                                other.LastErrorLocal = stats.LastErrorLocal;
+                                other.QuotaRefreshPending = false;
+                            }
+                        }
+                    }
+
                     // Cotas Google sao por modelo/projeto: esgotar em uma funcao esgota em todas.
                     if (Array.IndexOf(GoogleBuckets, (bucket ?? "").ToLowerInvariant()) >= 0 && (statusCode == 429 || statusCode == 404))
                     {
@@ -1035,6 +1066,10 @@ namespace FridaAgent
                 return TimeSpan.FromHours(12);
             }
             if (statusCode == 401 || statusCode == 403 || b.Contains("invalid api key") || b.Contains("api_key_invalid") || b.Contains("permission_denied"))
+            {
+                return TimeSpan.FromMinutes(30);
+            }
+            if (statusCode == 402 || b.Contains("insufficient balance") || b.Contains("insufficient_balance") || b.Contains("payment required") || b.Contains("quota exceeded and billing disabled"))
             {
                 return TimeSpan.FromMinutes(30);
             }
@@ -1186,6 +1221,8 @@ namespace FridaAgent
             if (s == null) return true;
             string b = (bucket ?? "").ToLowerInvariant();
             if (b == "tts_edge") return true; // Edge-TTS nao usa chave
+            if (b.Contains("kimi") || b.Contains("moonshot")) return !string.IsNullOrEmpty((s.kimi_api_key ?? "").Trim());
+            if (b.Contains("deepseek")) return !string.IsNullOrEmpty((s.deepseek_api_key ?? "").Trim());
             if (b.Contains("groq")) return !string.IsNullOrEmpty((s.groq_api_key ?? "").Trim());
             if (b.Contains("cerebras")) return !string.IsNullOrEmpty((s.cerebras_api_key ?? "").Trim());
             if (b.Contains("zai")) return !string.IsNullOrEmpty((s.zai_glm_api_key ?? "").Trim());
@@ -1252,7 +1289,10 @@ namespace FridaAgent
 
         public static bool IsQuotaError(string reason)
         {
-            return (reason ?? "").StartsWith("HTTP 429:", StringComparison.OrdinalIgnoreCase);
+            string r = reason ?? "";
+            return r.StartsWith("HTTP 429:", StringComparison.OrdinalIgnoreCase)
+                || r.StartsWith("HTTP 402:", StringComparison.OrdinalIgnoreCase)
+                || r.IndexOf("insufficient balance", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private static bool SameQuotaScope(ModelRuntimeStats a, string bucket, string model)

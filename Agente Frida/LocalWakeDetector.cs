@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -31,7 +31,10 @@ namespace FridaAgent
         private Thread _worker;
         private volatile bool _disposed;
         private int _resetRequested;
+        private string _pendingPartial;
+        private DateTime _pendingSince;
         private readonly Action<string> _onWake;
+        public volatile bool IsSpeakingPlayback;
         public string LastText {get;private set;}
         public bool SupportsOffKeyword {get;private set;}
         public bool Ready {get {return _recognizer!=IntPtr.Zero && !_disposed;}}
@@ -74,7 +77,7 @@ namespace FridaAgent
                     phrases.Add(control);
                     foreach(string name in new[]{"frida","frita","ferida"})if(find(_model,Utf8(name))>=0)phrases.Add(name+" "+control);
                 }
-                foreach(string negative in new[]{"não pare","não parar","como parar","para parar"})
+                foreach(string negative in new[]{"não pare","não parar","não para","como parar","como para","para parar"})
                     if(negative.Split(' ').All(word=>find(_model,Utf8(word))>=0))phrases.Add(negative);
                 if(phrases.Count==1)throw new InvalidDataException("Vocabulario local sem variantes da chamada");
                 _recognizer=Bind<RecognizerNew>("vosk_recognizer_new_grm")(_model,16000,new JavaScriptSerializer().Serialize(phrases).ToUtf8());
@@ -105,18 +108,50 @@ namespace FridaAgent
                     string key=complete!=0?"text":"partial";
                     string text=value!=null && value.ContainsKey(key)?Convert.ToString(value[key]):"";
                     if (!string.IsNullOrWhiteSpace(text)) LastText=text;
-                    text=System.Text.RegularExpressions.Regex.Replace(text,@"^(?:\[unk\]\s*)+","").Trim();
-                    string remainder;
-                    bool control=FridaSessionControl.Parse(text)!=FridaControlCommand.None;
-                    if(control || FridaInteractionPolicy.TryStripWake(text,out remainder))
+                    string cleaned;bool isControl;
+                    if(ShouldAcceptLocalHypothesis(text,complete!=0,IsSpeakingPlayback,out cleaned,out isControl))
                     {
+                        // Aguarda estabilidade: nao consome 'Frida' no primeiro fragmento de audio.
+                        if(complete==0)
+                        {
+                            if(_pendingPartial!=cleaned){_pendingPartial=cleaned;_pendingSince=DateTime.UtcNow;continue;}
+                            if((DateTime.UtcNow-_pendingSince).TotalMilliseconds<300)continue;
+                        }
+                        _pendingPartial=null;
                         _reset(_recognizer);
                         byte[] old;while(_queue.TryTake(out old)){}
-                        if(_onWake!=null)_onWake(text);
+                        if(_onWake!=null)_onWake(cleaned);
                     }
+                    else _pendingPartial=null;
                 }
             }
             catch(Exception ex) {if(!_disposed)BootLogger.Log("Detector local interrompido: "+ex.GetType().Name);}
+        }
+        internal static bool ShouldAcceptLocalHypothesis(string rawVoskText,bool complete,bool isSpeakingPlayback,out string cleanedText,out bool isControl)
+        {
+            cleanedText="";isControl=false;
+            string raw=(rawVoskText ?? "").Trim();
+            if(string.IsNullOrWhiteSpace(raw))return false;
+            bool hadUnk=raw.IndexOf("[unk]",StringComparison.OrdinalIgnoreCase)>=0;
+            cleanedText=System.Text.RegularExpressions.Regex.Replace(raw,@"^(?:\[unk\]\s*)+","").Trim();
+            if(string.IsNullOrWhiteSpace(cleanedText))return false;
+            FridaControlCommand cmd=FridaSessionControl.Parse(cleanedText);
+            if(cmd!=FridaControlCommand.None)
+            {
+                // Parar e reversivel; OFF exige chamada explicita. Desconhecidas/negacoes nunca sao cortadas.
+                if(hadUnk)return false;
+                if(cmd==FridaControlCommand.Off && (!complete || !FridaSessionControl.IsAddressedControl(cleanedText)))return false;
+                if(cmd==FridaControlCommand.Stop && !complete && !FridaSessionControl.IsExplicitCompoundOrWakeControl(cleanedText))return false;
+                if(string.Equals(FridaInteractionPolicy.Normalize(cleanedText),"para",StringComparison.Ordinal) && hadUnk)
+                    cmd=FridaControlCommand.None;
+                else if(isSpeakingPlayback && !complete && !FridaSessionControl.IsExplicitCompoundOrWakeControl(cleanedText))
+                    cmd=FridaControlCommand.None;
+            }
+            isControl=cmd!=FridaControlCommand.None;
+            if(isControl)return true;
+            if(isSpeakingPlayback)return false;
+            string remainder;
+            return FridaInteractionPolicy.TryStripWake(cleanedText,out remainder);
         }
         public void Reset()
         {

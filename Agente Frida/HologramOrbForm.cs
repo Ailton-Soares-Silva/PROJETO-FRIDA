@@ -243,6 +243,7 @@ namespace FridaAgent
 
         public void SetActivityState(OrbActivityState state, string statusTitle, string subtitle)
         {
+            if (FridaIdeRuntime.Silent) return;
             if(IsDisposed || Disposing)return;
             FridaRuntimeHealth.State(state==OrbActivityState.Hidden?"inativa":state==OrbActivityState.Listening || state==OrbActivityState.FollowUp?"ouvindo":state==OrbActivityState.Thinking?"processando":state==OrbActivityState.Executing?"executando":"falando",statusTitle);
             if (InvokeRequired)

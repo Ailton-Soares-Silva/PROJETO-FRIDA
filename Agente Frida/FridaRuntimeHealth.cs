@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -53,9 +53,17 @@ namespace FridaAgent
         public static void Inactivity(){lock(Sync)_inactivityCycles++;}
         public static void UiPulse(){lock(Sync)_ui=DateTime.UtcNow;}
         public static void BeginRequest(string id){lock(Sync){_request=id;_stage="classificando";Pending.Clear();}Pulse();}
-        public static void EndRequest(){lock(Sync){_request=null;Pending.Clear();}Pulse();}
-        public static void OperationStarted(string key,string description){lock(Sync){Pending[key]=description;_stage=description;}Pulse();}
-        public static void OperationFinished(string key){lock(Sync)Pending.Remove(key);Pulse();}
+        public static void EndRequest()
+        {
+            lock (Sync)
+            {
+                _request = null; Pending.Clear();
+                if (!_clean) { _state = "inativa"; _stage = "aguardando nova solicitacao"; }
+            }
+            Pulse();
+        }
+        public static void OperationStarted(string key,string description){FridaDiagnostics.Publish("motor", "Início · " + description, key);lock(Sync){Pending[key]=description;_stage=description;}Pulse();}
+        public static void OperationFinished(string key){FridaDiagnostics.Publish("motor", "Fim · " + key, key);lock(Sync)Pending.Remove(key);Pulse();}
         public static void AtomicWrite(string path,string json)
         {
             string temporary=path+"."+Guid.NewGuid().ToString("N")+".tmp";

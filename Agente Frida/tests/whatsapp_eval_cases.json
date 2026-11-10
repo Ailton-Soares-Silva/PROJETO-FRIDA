@@ -297,5 +297,67 @@
       "date_to": "",
       "order": "newest"
     }
+  },
+  {
+    "request": "segundo os grupos do whatsapp, qual foi o problema mais crítico de hoje na fábrica?",
+    "expected": {
+      "operation": "read_recent_groups",
+      "query": "",
+      "chat_type": "group",
+      "chat_name": "",
+      "date_from": "2026-11-04T00:00:00-03:00",
+      "date_to": "2026-11-05T00:00:00-03:00"
+    }
+  },
+  {
+    "request": "resuma o que aconteceu ontem nos grupos do WhatsApp",
+    "expected": {
+      "operation": "read_recent_groups",
+      "query": "",
+      "chat_type": "group",
+      "chat_name": "",
+      "date_from": "2026-11-03T00:00:00-03:00",
+      "date_to": "2026-11-04T00:00:00-03:00"
+    }
+  },
+  {
+    "request": "quais foram as principais ocorrências da fábrica anteontem nos grupos do whatsapp?",
+    "expected": {
+      "operation": "read_recent_groups",
+      "query": "",
+      "chat_type": "group",
+      "chat_name": "",
+      "date_from": "2026-11-02T00:00:00-03:00",
+      "date_to": "2026-11-03T00:00:00-03:00"
+    }
+  },
+  {
+    "request": "o que de mais grave falaram nos grupos do zap?",
+    "expected": {
+      "operation": "read_recent_groups",
+      "query": "",
+      "chat_type": "group",
+      "chat_name": ""
+    }
+  },
+  {
+    "request": "e ontem?",
+    "expected": {
+      "operation": "read_recent_groups",
+      "query": "",
+      "chat_type": "group",
+      "chat_name": "",
+      "date_from": "2026-11-03T00:00:00-03:00",
+      "date_to": "2026-11-04T00:00:00-03:00"
+    },
+    "previous": {
+      "operation": "read_recent_groups",
+      "query": "",
+      "chat_name": "",
+      "chat_type": "group",
+      "date_from": "2026-11-04T00:00:00-03:00",
+      "date_to": "2026-11-05T00:00:00-03:00",
+      "order": "newest"
+    }
   }
 ]

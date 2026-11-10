@@ -1,4 +1,4 @@
-# ==========================================
+﻿# ==========================================
 # PROJETO FRIDA - Git Ignore
 # Chaves de API, Segredos, Credenciais e Dados Pessoais
 # ==========================================
@@ -76,9 +76,28 @@ tests/results/e2e-usage.json
 # Relatorios de atendimento em execucao (transcricoes do operador)
 /ConversationReports/
 /ExecutionReports/
+# Estado das tarefas em execucao: o campo Objective guarda o pedido bruto do operador
+/DevelopmentTasks/
+/tests/DevelopmentTasks/
 # Diagnosticos ad hoc das intervencoes, memoria pessoal e pesos de modelos locais
 frida_memoria.json
 scratch/
 tests/results/
 wake/vosk-model-small-pt-0.3/
 wake/vosk-model-spk-0.4/
+
+# Dados pessoais da interface de trabalho
+/IdeData/
+
+/tests/IdeData/
+
+# Diagnostico local e corpus de voz do operador
+voice_metrics.jsonl
+voice_capture_metrics.jsonl
+/VoiceEvaluation/
+
+.claude/
+.venv*/
+.venv-agy/
+*.tmp
+

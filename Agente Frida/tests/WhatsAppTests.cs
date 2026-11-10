@@ -18,9 +18,66 @@ namespace FridaAgent
         private static void Check(bool ok,string message){if(!ok)throw new Exception(message);}
         public static void Run(Action<string,Action> test)
         {
+            test("Operational status searches a code in groups; connection status stays a session check",()=>{
+                string explicitRequest="qual o ultimo status SEGUNDO OS GRUPOS DO WHATSAPP do SCS1I47";
+                var read=FridaWhatsAppRequest.Detect(explicitRequest,null);
+                Check(read.Operation=="search" && read.DirectPlan.query=="SCS1I47" && read.DirectPlan.chat_type=="group","Consulta virou status de sessão");
+                var history=new[]{new KeyValuePair<string,string>("user","segundo os grupos do whatsapp qual foi o problema mais critico da fabrica hoje?")};
+                var next=FridaWhatsAppRequest.Detect("qual o ultimo status do SCS1I47",history);
+                Check(next!=null && next.DirectPlan.chat_type=="group","Complemento perdeu o escopo de grupos");
+                Check(FridaWhatsAppRequest.Detect("qual o ultimo status do SCS1I47",null)==null,"Escolheu fonte privada sem contexto");
+                var offer=history.Concat(new[]{new KeyValuePair<string,string>("user","qual o ultimo status do SCS1I47"),new KeyValuePair<string,string>("model","Posso abrir o WhatsApp e consultar a conversa.")});
+                Check(FridaWhatsAppRequest.Detect("OK PODE FAZER",offer).DirectPlan.query=="SCS1I47","Confirmação virou conversa genérica");
+                Check(FridaWhatsAppRequest.Detect("Qual o status da conexão do WhatsApp?",null).Operation=="status","Consulta de sessão perdida");
+                Check(FridaWhatsAppPlan.SimpleStatus("último status do SCS1I47 no grupo Oficina ontem",false)==null,"Descartou filtros");
+                Check(FridaWhatsAppPlan.Parse("{\"operation\":\"status\",\"query\":\"\",\"chat_type\":\"all\"}",explicitRequest,null)==null,"Plano inválido aceito");
+                var daily=FridaWhatsAppPlan.DailyGroupOverview(history[0].Value);
+                Check(daily!=null && daily.operation=="read_recent_groups" && !string.IsNullOrEmpty(daily.date_from),"Resumo diário sem plano de leitura");
+            });
+            test("Group overview covers other days and phrasings but not named groups, codes or ranges",()=>{
+                var today=FridaWhatsAppPlan.LocalToday();
+                var yesterday=FridaWhatsAppPlan.DailyGroupOverview("resuma as ocorrências de ontem nos grupos do zap");
+                Check(yesterday!=null && yesterday.date_from==FridaWhatsAppPlan.LocalIso(today.AddDays(-1)) && yesterday.date_to==FridaWhatsAppPlan.LocalIso(today),"Ontem fora do período");
+                Check(yesterday.limit==FridaWhatsAppPlan.RecentGroupsLimit && yesterday.chat_type=="group","Limite ou tipo da leitura de grupos");
+                var before=FridaWhatsAppPlan.DailyGroupOverview("o que teve de mais grave anteontem nos grupos?");
+                Check(before!=null && before.date_from==FridaWhatsAppPlan.LocalIso(today.AddDays(-2)),"Anteontem fora do período");
+                Check(FridaWhatsAppPlan.DailyGroupOverview("qual o problema mais critico hoje no grupo Qualidade Corte e Dobra")==null,"Grupo nomeado virou panorama");
+                Check(FridaWhatsAppPlan.DailyGroupOverview("qual o problema mais critico hoje nos grupos sobre o 3213")==null,"Código virou panorama");
+                Check(FridaWhatsAppPlan.DailyGroupOverview("compare os problemas de hoje e de ontem nos grupos")==null,"Dois dias viraram um só");
+                Check(FridaWhatsAppPlan.DailyGroupOverview("qual o problema mais grave hoje à tarde nos grupos")==null,"Parte do dia descartada");
+                Check(FridaWhatsAppPlan.DailyGroupOverview("quais grupos eu tenho no whatsapp")==null,"Listagem virou panorama");
+            });
+            test("Senior plan for group overview is validated and normalized",()=>{
+                string request="o que aconteceu de mais grave nos grupos do whatsapp desde segunda?";
+                var range=FridaWhatsAppPlan.Parse("{\"operation\":\"read_recent_groups\",\"query\":\"grave\",\"chat_name\":\"\",\"chat_type\":\"all\",\"date_from\":\"2026-11-02T00:00:00.000-03:00\",\"date_to\":\"2026-11-05T00:00:00-03:00\"}",request,null);
+                Check(range!=null && range.query=="" && range.chat_type=="group" && range.limit==FridaWhatsAppPlan.RecentGroupsLimit,"Plano de grupos não normalizado");
+                Check(range.date_from=="2026-11-02T00:00:00-03:00" && range.date_to=="2026-11-05T00:00:00-03:00","Datas não canônicas");
+                var noPeriod=FridaWhatsAppPlan.Parse("{\"operation\":\"read_recent_groups\",\"query\":\"\",\"chat_type\":\"group\"}","qual o problema mais critico nos grupos?",null);
+                Check(noPeriod!=null && noPeriod.date_from==FridaWhatsAppPlan.LocalIso(FridaWhatsAppPlan.LocalToday()) && noPeriod.date_to==FridaWhatsAppPlan.LocalIso(FridaWhatsAppPlan.LocalToday().AddDays(1)),"Sem período não usou hoje");
+                var openEnd=FridaWhatsAppPlan.Parse("{\"operation\":\"read_recent_groups\",\"query\":\"\",\"chat_type\":\"group\",\"date_from\":\"2026-11-02T00:00:00-03:00\"}",request,null);
+                Check(openEnd!=null && openEnd.date_to==FridaWhatsAppPlan.LocalIso(FridaWhatsAppPlan.LocalToday().AddDays(1)),"Início sem fim não foi até hoje");
+                Check(FridaWhatsAppPlan.Parse("{\"operation\":\"read_recent_groups\",\"query\":\"\",\"chat_name\":\"Oficina\",\"chat_type\":\"group\"}","qual o problema mais grave hoje no grupo Oficina",null)==null,"Grupo nomeado aceito como panorama");
+                Check(FridaWhatsAppPlan.Parse("{\"operation\":\"read_recent_groups\",\"query\":\"\",\"chat_type\":\"group\"}","o que falaram do 3213 hoje nos grupos",null)==null,"Código aceito como panorama");
+                Check(FridaWhatsAppPlan.Parse("{\"operation\":\"read_recent_groups\",\"query\":\"\",\"chat_type\":\"group\",\"date_to\":\"2026-11-05T00:00:00-03:00\"}",request,null)==null,"Fim sem início aceito");
+                Check(FridaWhatsAppResearch.SynthesisRequest(range,request,request).Contains(range.date_from),"Síntese sem período");
+                Check(FridaWhatsAppResearch.PlanningPrompt(request,null,DateTimeOffset.UtcNow).Contains("read_recent_groups"),"Planejador não conhece a leitura de grupos");
+            });
+            test("Group overview reply names the period it covers",()=>{
+                var today=FridaWhatsAppPlan.LocalToday();
+                Check(FridaWhatsAppSource.PeriodLabel(FridaWhatsAppPlan.LocalIso(today),FridaWhatsAppPlan.LocalIso(today.AddDays(1)))=="de hoje","Rótulo de hoje");
+                Check(FridaWhatsAppSource.PeriodLabel(FridaWhatsAppPlan.LocalIso(today.AddDays(-1)),FridaWhatsAppPlan.LocalIso(today))=="de ontem","Rótulo de ontem");
+                Check(FridaWhatsAppSource.PeriodLabel("2026-10-01T00:00:00-03:00","2026-10-02T00:00:00-03:00")=="de 01/10/2026","Rótulo de data");
+                Check(FridaWhatsAppSource.PeriodLabel("2026-10-01T00:00:00-03:00","2026-10-04T00:00:00-03:00")=="de 01/10 a 03/10/2026","Rótulo de intervalo");
+                Check(FridaWhatsAppSource.PeriodLabel("","")=="do período","Rótulo sem datas");
+            });
             foreach(string text in new[]{"pesquise nos grupos do whatsapp e me retorne infromações sobre o 3213","busque 3213 no WhatsApp","procure mensagens sobre 3213 no WhatsApp","busque na conversa com João no WhatsApp por 3213","quero saber sobre 3213 no WhatsApp"})
             {string request=text;test("senior route "+request,()=>{Check(FridaWhatsAppRequest.Detect(request,null)!=null,"Pedido nao reconhecido");Check(FridaTaskRouting.Decide(request,false,false).Kind==FridaTaskKind.WhatsAppResearch,"Rota incorreta");});}
             test("WhatsApp explanation remains explanation",()=>Check(FridaWhatsAppRequest.Detect("Explique como listar grupos no WhatsApp",null)==null,"Explicacao executada"));
+            test("WhatsApp token overlap matches Qualidade Corte e Dobra when queried as qualidade corte a laser",()=>
+            {
+                Check(FridaWhatsAppSource.SmartChatNameMatch("Qualidade Corte e Dobra - DONO SUEIDE VICE AILTON","qualidade corte a laser"),"Overlap 2/3 recusado");
+                Check(!FridaWhatsAppSource.SmartChatNameMatch("Qualidade Pintura Industrial","qualidade corte a laser"),"Overlap 1/3 aceito indevidamente");
+            });
             test("WhatsApp context yesterday",()=>Check(FridaWhatsAppRequest.Detect("e ontem?",new[]{new KeyValuePair<string,string>("user","busque 3213 no WhatsApp")})!=null,"Contexto perdido"));
             test("WhatsApp numeric query preserved",()=>Check(FridaWhatsAppPlan.Parse("{\"operation\":\"search\",\"query\":\"321\",\"chat_type\":\"group\"}","busque 3213 no WhatsApp",null)==null,"Codigo alterado aceito"));
             test("WhatsApp dates require timezone",()=>Check(FridaWhatsAppPlan.Parse("{\"operation\":\"search\",\"query\":\"3213\",\"chat_type\":\"all\",\"date_from\":\"2026-11-04\"}","3213",null)==null,"Data sem fuso aceita"));
@@ -110,6 +167,20 @@ namespace FridaAgent
             {
                 Check(FridaWhatsAppRequest.Detect("Quantas peças foram entregues hoje no grupo Qualidade Corte e Dobra?",null)!=null,"Grupo implicito ignorado");
                 Check(FridaWhatsAppRequest.Detect("Alguém me mandou uma mensagem agora à noite?",null)!=null,"Mensagem implicita ignorada");
+            });
+            test("WhatsApp follow-up 'alem deste registro existe mais algum outro' stays in WhatsApp context and preserves query",()=>
+            {
+                var hist=new[]
+                {
+                    new KeyValuePair<string,string>("user","qual o ultimo registro nos grupos de whatsapp sobre o 3213"),
+                    new KeyValuePair<string,string>("model","[M8b114fd607ccf3ea] Custos de Reforma — Ailton (17:02, 04/11/2026): hoje estou acompanhando o 3213 e 3225\nCobertura: accessible_web_search; estado: search_results_exhausted. Registros recebidos: 1.")
+                };
+                Check(FridaWhatsAppRequest.Detect("além deste registro, existe mais algum outro?",hist)!=null,"Follow-up perdeu contexto WhatsApp");
+                string ctxText=FridaReliability.ContextText("model",hist[1].Value);
+                Check(ctxText.Contains("3213")&&!ctxText.Contains("Nao ha monitoramento"),"ContextText apagou resposta verificada: "+ctxText);
+                var prev=new FridaWhatsAppPlan{operation="search",query="3213",chat_type="group"};
+                var parsed=FridaWhatsAppPlan.Parse("{\"operation\":\"search\",\"query\":\"\",\"chat_name\":\"\",\"chat_type\":\"group\",\"date_from\":\"\",\"date_to\":\"\",\"order\":\"newest\",\"clarification\":\"Qual registro?\"}","além deste registro, existe mais algum outro?",prev);
+                Check(parsed!=null&&parsed.query=="3213"&&string.IsNullOrEmpty(parsed.clarification),"Parse nao preservou query 3213 no follow-up");
             });
         }
         private sealed class FakeSenior:HttpMessageHandler

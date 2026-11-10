@@ -19,6 +19,10 @@ from whatsapp_dom import WebUI, CHATS_JS, MESSAGES_JS, SEARCH_ROWS_JS, normalize
 START_SECONDS, LOAD_SECONDS, PAIR_SECONDS, COLLECT_SECONDS, IDLE_SECONDS = 30, 60, 180, 120, 600
 # An empty chat search is double-checked by reading this many loaded history pages.
 SCAN_PAGES = 8
+# Group overview (read_recent_groups): WhatsApp renders only ~5-15 messages and each
+# scroll goes back one screen, so a busy group needs many pages to reach "ontem".
+# Each group gets a time budget (within COLLECT_SECONDS) instead of a page count.
+RECENT_GROUPS, RECENT_GROUP_MESSAGES, RECENT_GROUP_SECONDS, RECENT_SETTLE_SECONDS = 6, 10, 18, .6
 # Homologation forces short collection blocks to exercise cursors; production keeps 120 s.
 try:
     COLLECT_SECONDS = max(5, min(120, int(os.environ.get("FRIDA_WHATSAPP_COLLECT_SECONDS", COLLECT_SECONDS))))
@@ -79,10 +83,9 @@ def query_cache(request):
     if request.get("query"):
         clauses.append("m.message_key IN (SELECT message_key FROM messages_fts WHERE messages_fts MATCH ?)")
         params.append('"' + request["query"].replace('"', '""') + '"')
-    for field, column in (("chat_name", "chat_name"), ("chat_id", "chat_id")):
-        if request.get(field):
-            clauses.append("m." + column + "=? COLLATE NOCASE")
-            params.append(request[field])
+    if request.get("chat_id"):
+        clauses.append("m.chat_id=? COLLATE NOCASE")
+        params.append(request["chat_id"])
     if request.get("chat_type", "all") != "all":
         clauses.append("m.chat_type=?")
         params.append(request["chat_type"])
@@ -90,13 +93,27 @@ def query_cache(request):
         if request.get(field):
             clauses.append("julianday(m.timestamp)" + operator + "julianday(?)")
             params.append(request[field])
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    exact_clauses = list(clauses)
+    exact_params = list(params)
+    if request.get("chat_name"):
+        exact_clauses.append("m.chat_name=? COLLATE NOCASE")
+        exact_params.append(request["chat_name"])
+    where = " WHERE " + " AND ".join(exact_clauses) if exact_clauses else ""
+    limit = request.get("limit", 20)
     with legacy.cache_connection() as conn:
         direction = "ASC" if request.get("order") == "oldest" else "DESC"
-        rows = conn.execute("SELECT m.payload FROM messages_v2 m" + where + " ORDER BY julianday(m.timestamp) " + direction + " LIMIT ?", params + [request.get("limit", 20)]).fetchall()
-    result = [json.loads(row[0]) for row in rows]
+        rows = conn.execute("SELECT m.payload FROM messages_v2 m" + where + " ORDER BY julianday(m.timestamp) " + direction + " LIMIT ?", exact_params + [limit]).fetchall()
+        result = [json.loads(row[0]) for row in rows]
+        if not result and request.get("chat_name"):
+            base_where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            candidates = conn.execute("SELECT m.chat_name, m.payload FROM messages_v2 m" + base_where + " ORDER BY julianday(m.timestamp) " + direction, params).fetchall()
+            for chat_name, payload in candidates:
+                if chat_name_matches(chat_name or "", request["chat_name"]):
+                    result.append(json.loads(payload))
+                    if len(result) >= limit:
+                        break
     if not result and not any(request.get(k) for k in ("chat_id", "date_from", "date_to")) and request.get("chat_type", "all") == "all":
-        result = legacy.query_cached_messages(request.get("chat_name"), request.get("query"), request.get("limit", 20))
+        result = legacy.query_cached_messages(request.get("chat_name"), request.get("query"), limit)
         for item in result:
             item["source_verified"] = False
     return result
@@ -183,7 +200,7 @@ def matches_request(item, request):
 def validate_request(request):
     request = dict(request)
     operation = request.get("operation")
-    if operation not in ("status", "pair", "list_groups", "list_chats", "read_unread", "read_group", "read_chat", "search", "search_cache", "diagnostics"):
+    if operation not in ("status", "pair", "list_groups", "list_chats", "read_unread", "read_group", "read_chat", "read_recent_groups", "search", "search_cache", "diagnostics"):
         raise ReaderFailure("unsupported_read", "Operacao desconhecida.")
     request["chat_name"] = request.get("chat_name") or request.get("group_name") or ""
     request["chat_type"] = request.get("chat_type") or ("group" if operation in ("read_group", "list_groups") else "all")
@@ -191,7 +208,7 @@ def validate_request(request):
         raise ReaderFailure("invalid_filter", "Tipo de conversa invalido.")
     if operation in ("read_chat", "read_group") and not request["chat_name"]:
         raise ReaderFailure("missing_chat", "Informe a conversa.")
-    if operation in ("search", "search_cache") and not str(request.get("query") or "").strip():
+    if (operation == "search" or (operation == "search_cache" and not request["chat_name"])) and not str(request.get("query") or "").strip():
         raise ReaderFailure("missing_query", "Informe o termo de busca.")
     for field in ("date_from", "date_to"):
         if request.get(field):
@@ -202,6 +219,8 @@ def validate_request(request):
                 raise ReaderFailure("invalid_date", "Data deve conter fuso horario.")
     if request.get("date_from") and request.get("date_to") and datetime.fromisoformat(request["date_from"]) >= datetime.fromisoformat(request["date_to"]):
         raise ReaderFailure("invalid_date", "Intervalo de datas invalido.")
+    if operation == "read_recent_groups" and (request["chat_type"] != "group" or not request.get("date_from") or not request.get("date_to") or request["chat_name"]):
+        raise ReaderFailure("invalid_filter", "A leitura de grupos recentes requer grupos e um período definido.")
     try:
         request["chat_candidate"] = int(request.get("chat_candidate") or 0)
     except (ValueError, TypeError):
@@ -245,7 +264,7 @@ class ReaderSession:
             self.lock.__exit__()
             self.lock = None
 
-    def connect(self, pair=False):
+    def connect(self, pair=False, embedded=False):
         if self.driver and pair:
             legacy.close_driver(self.driver)
             self.driver = None
@@ -255,22 +274,121 @@ class ReaderSession:
         if not self.driver:
             self.authenticated = False
             self.progress("browser_start", "Iniciando leitor do WhatsApp.", START_SECONDS)
-            self.driver = legacy.get_driver(headless=not pair)
+            self.driver = legacy.get_driver(headless=not pair or embedded)
         self.progress("pairing" if pair else "authentication", "Leia o QR Code pelo celular." if pair else "Verificando sessao do WhatsApp.", PAIR_SECONDS + 20 if pair else LOAD_SECONDS + 20)
         status = "LOGGED_IN" if self.authenticated and not pair and self.driver.find_elements("id", "pane-side") else legacy.check_login_status(self.driver, LOAD_SECONDS if not pair else 5)
         if pair and status != "LOGGED_IN":
             deadline = time.monotonic() + PAIR_SECONDS
+            previous_qr = None
             while time.monotonic() < deadline:
                 self.checkpoint()
                 if self.driver.find_elements("id", "pane-side"):
                     status = "LOGGED_IN"
                     break
+                if embedded:
+                    elements = self.driver.find_elements("css selector", "canvas[aria-label*='Scan'], canvas[aria-label*='QR'], div[data-ref]")
+                    if elements:
+                        qr = elements[0].screenshot_as_base64
+                        if qr != previous_qr:
+                            self.emit({"event": "qr", "request_id": self.request_id, "png_base64": qr})
+                            previous_qr = qr
                 time.sleep(.2)
         if status != "LOGGED_IN":
             self.authenticated = False
             raise ReaderFailure("needs_auth" if status == "NEEDS_QR" and not pair else "timeout", "Sessao precisa de QR Code." if status == "NEEDS_QR" and not pair else "O WhatsApp nao confirmou a conexao no prazo.")
         self.authenticated = True
         return {"status": "success", "authenticated": True}
+
+    def recent_groups(self, request):
+        ui = WebUI(self.driver, ReaderFailure, self.checkpoint, self.progress)
+        self.progress("collecting", "Lendo mensagens nos grupos recentes do WhatsApp.", COLLECT_SECONDS)
+        self.collect_deadline = time.monotonic() + COLLECT_SECONDS
+        records, issues, inspected = {}, [], 0
+        try:
+            ui.reset_search()
+            try:
+                legacy.select_groups_filter(self.driver)
+                rows = self.driver.execute_script(CHATS_JS, True)
+            except legacy.ReaderFailure as exc:
+                if exc.status != "dom_changed":
+                    raise
+                # Custom lists can replace the Groups tab. Use previously verified
+                # names only to select candidates; verify each header and read live.
+                with legacy.cache_connection() as conn:
+                    known = {normalized(name) for (name,) in conn.execute(
+                        "SELECT DISTINCT chat_name FROM messages_v2 WHERE chat_type='group'")}
+                visible = self.driver.execute_script(CHATS_JS, False)
+                if not isinstance(visible, list):
+                    raise ReaderFailure("dom_changed", "A lista de conversas não pôde ser lida.")
+                rows = [dict(row, is_group=True) for row in visible if normalized(row.get("name")) in known]
+                if not rows:
+                    raise ReaderFailure("missing_groups_filter", "A lista visível não contém grupos já identificados. Informe o nome do grupo que deseja consultar.")
+                issues.append("visible_known_groups")
+            if not isinstance(rows, list) or (not rows and not ui.empty_state()):
+                raise ReaderFailure("dom_changed", "O leitor não conseguiu identificar a lista de grupos.")
+            names = list(dict.fromkeys(row["name"] for row in rows if row.get("is_group") and row.get("name")))[:RECENT_GROUPS]
+            for position, name in enumerate(names):
+                self.checkpoint()
+                try:
+                    identity = ui.open_chat(name, kind="group")
+                    if normalized(identity["chat"]) != normalized(name) or identity["chat_type"] != "group":
+                        raise ReaderFailure("chat_mismatch", "O cabeçalho não confirmou o grupo.")
+                    # Split what is left of the collection block among the remaining groups.
+                    share = (self.collect_deadline - time.monotonic()) / (len(names) - position)
+                    messages = self.period_messages(ui, identity, request, max(1.0, min(RECENT_GROUP_SECONDS, share)))
+                    inspected += 1
+                    recent = sorted((m for m in messages if m.get("source_verified") and matches_request(m, request)),
+                                    key=lambda m: m["timestamp"], reverse=True)[:RECENT_GROUP_MESSAGES]
+                    records.update((m["reference"], m) for m in recent)
+                except ReaderFailure as exc:
+                    if exc.status in ("user_cancelled", "collection_deadline"):
+                        raise
+                    issues.append(exc.status)
+            if names and not inspected:
+                raise ReaderFailure("dom_changed", "Nenhum dos grupos pôde ser conferido: " + ", ".join(sorted(set(issues))))
+        except ReaderFailure as exc:
+            if exc.status != "collection_deadline" or not inspected:
+                raise
+            issues.append(exc.status)
+        finally:
+            self.collect_deadline = None
+        messages = sorted(records.values(), key=lambda m: m["timestamp"], reverse=True)[:request["limit"]]
+        save_records(messages)
+        return {"status": "partial", "source": "browser_dom_snapshot", "messages": messages,
+                "coverage": {"complete": False, "scope": "recent_group_sample", "reason": "visible_history_boundary",
+                             "groups_read": inspected, "issues": sorted(set(issues)),
+                             "date_from": request["date_from"], "date_to": request["date_to"]}}
+
+    def period_messages(self, ui, identity, request, seconds):
+        # Scroll back one screen at a time (never skipping, so no in-period message is
+        # jumped over) until a message older than the period start is loaded, enough
+        # newest in-period messages are collected, history ends or the budget runs out.
+        # The DOM is virtualized, so messages are accumulated across pages.
+        start = datetime.fromisoformat(request["date_from"])
+        stop_at = time.monotonic() + seconds
+        found, stuck = {}, 0
+        while True:
+            batch = ui.messages(identity)
+            found.update((m["reference"], m) for m in batch)
+            in_period = sum(1 for m in found.values() if m.get("source_verified") and matches_request(m, request))
+            if in_period >= RECENT_GROUP_MESSAGES or time.monotonic() >= stop_at or any(
+                    m.get("timestamp") and datetime.fromisoformat(m["timestamp"]) < start for m in batch):
+                break
+            move = ui.scroll("#main", -1)
+            if not move:
+                break
+            # At the top of the loaded history WhatsApp may still be fetching older
+            # messages; only three still pages in a row mean the history really ended.
+            stuck = stuck + 1 if not move.get("moved") and move.get("boundary") else 0
+            if stuck >= 3:
+                break
+            deadline = min(time.monotonic() + RECENT_SETTLE_SECONDS, stop_at)
+            if self.collect_deadline:
+                deadline = min(deadline, self.collect_deadline)
+            while time.monotonic() < deadline:
+                self.checkpoint()
+                time.sleep(.1)
+        return list(found.values())
 
     def collect(self, request):
         state = load_cursor(request)
@@ -335,7 +453,13 @@ class ReaderSession:
                         if row_key in visited:
                             continue
                         try:
-                            row["element"].click()
+                            try:
+                                row["element"].click()
+                            except Exception as click_exc:
+                                if type(click_exc).__name__ in ("ElementClickInterceptedException", "ElementNotInteractableException", "MoveTargetOutOfBoundsException"):
+                                    self.driver.execute_script("arguments[0].scrollIntoView({block:'center'}); arguments[0].click();", row["element"])
+                                else:
+                                    raise
                             target_id = row.get("message_id")
                             target_text = (row.get("text") or "").strip('\u202a\u202b\u202c\u200e\u200f ')
                             def target_loaded():
@@ -375,9 +499,10 @@ class ReaderSession:
                             issues.append(exc.status)
                             visited.add(row_key)
                         except Exception as exc:
-                            if type(exc).__name__ != "StaleElementReferenceException":
+                            if type(exc).__name__ not in ("StaleElementReferenceException", "ElementClickInterceptedException", "ElementNotInteractableException"):
                                 raise
-                            issues.append("stale_search_row")
+                            issues.append("stale_search_row" if type(exc).__name__ == "StaleElementReferenceException" else "intercepted_search_row")
+                            visited.add(row_key)
                 else:
                     current = self.driver.execute_script(CHATS_JS, request["chat_type"] == "group")
                     if not isinstance(current, list):
@@ -453,6 +578,13 @@ class ReaderSession:
             issues.append(type(exc).__name__)
         finally:
             self.collect_deadline = None
+        if operation in ("read_chat", "read_group") and not request.get("cursor"):
+            cache_req = dict(request, limit=max(request.get("limit", 50), 80))
+            for cached_item in query_cache(cache_req):
+                ref = cached_item.get("reference")
+                if ref and ref not in seen and cached_item.get("source_verified") and matches_request(cached_item, request):
+                    records.append(cached_item)
+                    seen.add(ref)
         if operation == "search" and not identity and records:
             attribution = self.check_homonyms(ui, records)
         if scan and reason not in ("collection_deadline", "user_cancelled"):
@@ -514,8 +646,14 @@ class ReaderSession:
             elif operation == "diagnostics":
                 result = {"status": "success", "python": sys.executable, "selenium_available": importlib.util.find_spec("selenium") is not None, "profile": legacy.PROFILE_DIR, "cache": legacy.CACHE_DB_PATH, "browser_running": self.driver is not None}
             else:
-                self.connect(pair=operation == "pair")
-                result = {"status": "LOGGED_IN", "authenticated": True} if operation == "status" else {"status": "success", "authenticated": True} if operation == "pair" else self.collect(request)
+                if request.get("embedded"):
+                    self.connect(pair=operation == "pair", embedded=True)
+                else:
+                    self.connect(pair=operation == "pair")
+                if operation == "read_recent_groups":
+                    result = self.recent_groups(request)
+                else:
+                    result = {"status": "LOGGED_IN", "authenticated": True} if operation == "status" else {"status": "success", "authenticated": True} if operation == "pair" else self.collect(request)
         except legacy.ReaderFailure as exc:
             result = {"status": exc.status, "message": exc.message, **getattr(exc, "data", {})}
         except Exception as exc:

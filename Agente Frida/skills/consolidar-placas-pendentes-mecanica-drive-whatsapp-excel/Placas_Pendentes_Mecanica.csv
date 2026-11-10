@@ -1,0 +1,199 @@
+﻿PRIORIDADE,PLACA,CHASSI,NUMERO_CAIXA,TIPO_FLUXO,ETAPA_ATUAL,STATUS_MECANICA,MOTIVO_PARADA,LEAD_TIME_REF_DIAS,ORIGEM,EVIDENCIA_WHATSAPP
+101,-,VR005113,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+102,-,VR005300,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+103,-,VR005590,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+104,-,VR005360,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+105,-,VR007012,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+106,-,VR005934,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+107,-,VR007301,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+108,-,VR007486,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+109,-,VR007507,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+110,-,VR007772,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+111,-,VR007986,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+112,-,VR007735,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+113,-,VR007810,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+114,-,VR007746,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+115,-,VR007471,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+116,-,VR011034,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+117,-,VR010654,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+118,-,VR010956,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+119,-,VR010917,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+120,-,VR011030,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+121,-,VR011268,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+122,-,VR011483,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+123,-,VR011263,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+124,-,VR010995,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+125,-,VR011564,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+126,-,VR011007,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+127,-,VR011652,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+128,-,VR011311,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+129,-,VR011374,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+130,-,VR011324,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+131,-,VR010815,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+132,-,VR011035,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+133,-,VR011388,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+134,-,VR014859,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+135,-,VR014720,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+136,-,VR014760,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+137,-,VR014796,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+138,-,VR015081,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+139,-,VR014997,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+140,-,VR015001,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+141,-,VR014785,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+142,-,VR014629,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+143,-,VR011332,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+144,-,VR014999,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+145,-,VR015010,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+146,-,VR014443,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+147,-,VR011554,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+148,-,VR018644,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+149,-,VR018499,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+150,-,VR018638,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+151,-,VR018619,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+152,-,VR018912,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+153,-,VR022131,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+154,-,VR022391,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+155,-,VR022483,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+156,-,VR022110,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+157,-,VR022363,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+158,-,VR022777,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+159,-,VR022472,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+160,-,VR023632,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+161,-,VR023700,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+162,-,VR023921,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+163,-,VR023968,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+164,-,VR023656,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+165,-,VR023935,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+166,-,VR023350,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+167,-,VR026425,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+168,-,VR026446,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+169,-,VR026616,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+170,-,VR026767,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+171,-,VR026777,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+172,-,VR026883,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+173,-,VR026881,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+174,-,VR026877,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+175,-,VR026912,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+176,-,VR027051,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+177,-,VR027016,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+178,-,VR026061,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+179,-,VR028169,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+180,-,VR028469,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+181,-,VR027202,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+182,-,VR028658,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+183,-,VR028118,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+184,-,VR026879,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+185,-,VR026773,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+186,-,VR026740,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+187,-,VR028370,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+188,-,VR027514,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+189,-,VR029786,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+190,-,VR029838,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+191,-,VR029790,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+192,-,VR026715,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+193,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+194,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+195,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+196,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+197,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+198,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+199,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+200,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+201,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+202,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+203,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+204,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+205,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+206,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+207,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+208,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+209,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+210,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+211,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+212,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+213,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+214,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+215,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+216,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+217,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+218,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+219,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+220,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+221,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+222,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+223,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+224,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+225,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+226,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+227,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+228,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+229,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+230,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+231,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+232,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+233,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+234,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+235,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+236,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+237,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+238,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+239,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+240,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+241,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,01- PROJETO CHECK-LIST,Sem mencao recente
+242,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+243,-,CECILIA,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+244,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+245,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+246,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+247,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+248,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+249,-,LOCAÇÃO,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,"[DEMANDAS - COMERCIAL- PCP   COPAC/LOPAC/RAINHA - 2026-11-05]: OS - 0057 ORDEM DE SERVIÇO COMERCIAL 
+
+. EMPRESA CLIENTE: AGIT
+
+. VENDA/LOCAÇÃO:"
+250,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+251,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+252,-,ENTRADA,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+253,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+254,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+255,-,ENCARROÇAMENTO,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,"[ENTREGA POP✅ - 2026-11-04]: Boa tarde  segue setor que terá salgados  hoje
+
+
+
+
+
+
+
+CORTE E DOBRA – 16 colab.
+"
+256,-,HIDRAULICA,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+257,-,ELÉTRICA,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,"[ENTREGA POP✅ - 2026-11-04]: Boa tarde  segue setor que terá salgados  hoje
+
+
+
+
+
+
+
+CORTE E DOBRA – 16 colab.
+"
+258,-,PINTURA,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,"[ENTREGA POP✅ - 2026-11-04]: TGN6F68 e SCL8B71 está na hidráulica, ainda precisa passar por elétrica e pintur"
+259,-,MECÂNICA,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,"[ENTREGA POP✅ - 2026-11-04]: Boa tarde  segue setor que terá salgados  hoje
+
+
+
+
+
+
+
+CORTE E DOBRA – 16 colab.
+"
+260,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+261,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+262,-,-,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,Sem mencao recente
+263,-,COMERCIAL,-,NOVO,Oficina_Geral,EM_ANDAMENTO,-,15,ORDENS DE SERVIÇOS COMERCIAL - CONTROLE,"[DEMANDAS - COMERCIAL- PCP   COPAC/LOPAC/RAINHA - 2026-11-05]: ATA DE REUNIÃO — AMAZÔNIA AMBIENTAL
+
+Data: 05/11/2026
+
+Participantes: Thaísa, Mô"

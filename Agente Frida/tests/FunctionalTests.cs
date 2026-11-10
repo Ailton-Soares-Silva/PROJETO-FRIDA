@@ -42,6 +42,9 @@ namespace FridaAgent
         {return FridaFileSearch.Find(query,new[]{"R"},TimeSpan.FromSeconds(1),CancellationToken.None,p=>tree.ContainsKey(p)?tree[p]:new string[0],attributes);}
         public static int Main(string[] options)
         {
+            // Same text rendering as FridaAgent's Main (IDE layout tests measure real text widths).
+            System.Windows.Forms.Application.EnableVisualStyles();
+            System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
             foreach(var item in new[]{new{Text="duas horas",Seconds=7200},new{Text="meia hora",Seconds=1800},new{Text="1h30",Seconds=5400},new{Text="1 hora e 30 minutos",Seconds=5400},new{Text="1,5 horas",Seconds=5400},new{Text="uma hora e meia",Seconds=5400},new{Text="vinte e cinco minutos",Seconds=1500},new{Text="45 segundos",Seconds=45}})
             {var value=item;Test("duration "+value.Text,()=>{int seconds;Check(FridaDuration.TryParse(value.Text,out seconds)&&seconds==value.Seconds,"Duracao incorreta: "+seconds);});}
             foreach(string value in new[]{"amanha","0 segundos","-5 minutos","1000000000 horas","agende","as 18 horas"})
@@ -197,6 +200,101 @@ namespace FridaAgent
                     Check(resolved=="Abra \"G:\\Meu Drive\\PLB_INTERNO\""&&Get(brain,"_pendingOpenCandidates")==null,"Escolha nao foi ligada ao caminho pendente");
                 }
             });
+            Test("browser and screen requests route to full tools and block capability refusal",()=>
+            {
+                foreach(string actual in new[]{"Pesquise no Google Chrome Filamento PP da Winkel e coloque os resultados em minha tela.","Pesquise no Google Chrome filamento PP", "pesquisa no meu Google Chrome Filamento PP. Coloca o resultado na minha tela."})
+                {
+                    var actualPlan=FridaTaskRouting.Decide(actual,false,false);
+                    var downgrade=FridaEconomyRouting.Parse("{\"kind\":\"research\",\"complexity\":\"simple\",\"requires_action\":true,\"answer\":\"\"}",actualPlan);
+                    FridaEconomyRouting.Apply(actualPlan,downgrade,actual,false);
+                    Check(actualPlan.Kind==FridaTaskKind.Technical && !actualPlan.ResearchOnly && !actualPlan.EconomyMode && !downgrade.AnswerDirectly,"Triagem eliminou acao de navegador: "+actual);
+                }
+                string navReq="Agora meu navegador está aberto em minha tela, acesse meu navegador e coloque esse filamento que você achou na minha tela.";
+                var intent=FridaRequestIntent.Classify(navReq);
+                Check(intent.RequiresTools && intent.Operations.Count==1 && intent.Operations[0].Kind=="open","Pedido de navegador/tela nao exigiu open_program_or_url");
+                var plan=FridaTaskRouting.Decide(navReq,true,false);
+                Check(plan.Kind==FridaTaskKind.Technical,"Pedido de navegador/tela nao foi para Technical");
+                var refusal=FridaEconomyRouting.Parse("{\"kind\":\"conversation\",\"complexity\":\"simple\",\"requires_action\":false,\"answer\":\"Não posso interagir diretamente com a sua tela ou controlar o navegador aberto.\"}",plan);
+                FridaEconomyRouting.Apply(plan,refusal,navReq,false);
+                Check(!refusal.AnswerDirectly && string.IsNullOrEmpty(refusal.Answer) && !plan.AnswersWithoutTools && plan.Kind==FridaTaskKind.Technical,"Recusa de capacidade passou pela triagem");
+
+                string chromeSearch="Chrome e pesquisa sobre PP WinCode preto.";
+                Check(FridaRequestIntent.Classify(chromeSearch).RequiresTools && FridaTaskRouting.Decide(chromeSearch,false,false).Kind==FridaTaskKind.Technical,"Abertura composta do Chrome com pesquisa ignorada");
+
+                string screenReq="Veja o que está na minha tela";
+                var screenIntent=FridaRequestIntent.Classify(screenReq);
+                Check(screenIntent.RequiresTools && screenIntent.Operations.Single().Kind=="screen","Inspecao de tela nao classificada");
+                var ledger=new FridaExecutionLedger();
+                ledger.Add(FridaVerifiedTools.Analysis("inspect_screen","visual_interpretation","Navegador aberto exibindo filamento PP.","screen_snapshot"));
+                string screenReply=FridaOperationalReply.Finalize(screenIntent,ledger,"");
+                Check(screenReply.Contains("Navegador aberto") && !screenReply.Contains("nao foi executada"),"Recibo de inspect_screen descartado");
+            });
+            Test("store stock and brand follow-up route to web research and preserve research kind",()=>
+            {
+                string stockReq="Esse PPI que você achou tem unidades disponíveis no estoque, na Procreto?";
+                Check(FridaEconomyRouting.NeedsFreshData(stockReq),"Consulta de estoque nao exigiu dados atualizados");
+                var stockPlan=FridaTaskRouting.Decide(stockReq,true,false);
+                var stockRefusal=FridaEconomyRouting.Parse("{\"kind\":\"conversation\",\"complexity\":\"simple\",\"requires_action\":false,\"answer\":\"Não tenho acesso ao estoque da Procreto.\"}",stockPlan);
+                FridaEconomyRouting.Apply(stockPlan,stockRefusal,stockReq,false);
+                Check(!stockRefusal.AnswerDirectly && stockPlan.Kind==FridaTaskKind.Research,"Consulta de estoque nao foi para web_research");
+
+                string brandReq="e a marca WinPlay.";
+                Check(FridaEconomyRouting.NeedsFreshData(brandReq),"Follow-up de marca nao exigiu pesquisa");
+                var history=new List<KeyValuePair<string,string>>{new KeyValuePair<string,string>("user","pesquise filamentos PP"),new KeyValuePair<string,string>("model","Filamento PP 1,75mm")};
+                Check(FridaInteractionPolicy.WithConversationReference(brandReq,history).Contains("[REFERENCIA DA CONVERSA]"),"Follow-up de marca perdeu contexto");
+
+                string pureRes="pesquise filamentos PP da Winkley.";
+                var resPlan=FridaTaskRouting.Decide(pureRes,false,false);
+                var resDec=FridaEconomyRouting.Parse("{\"kind\":\"research\",\"complexity\":\"simple\",\"requires_action\":true,\"answer\":\"\"}",resPlan);
+                FridaEconomyRouting.Apply(resPlan,resDec,pureRes,false);
+                Check(resPlan.Kind==FridaTaskKind.Research,"Pesquisa pura foi sobrescrita para Technical");
+
+                var resLedger=new FridaExecutionLedger();
+                string longTable=new string('A',450);
+                resLedger.Add(FridaVerifiedTools.Analysis("web_research","grounded_retrieval",longTable,"provider_search"));
+                string dedup=FridaOperationalReply.Finalize(FridaRequestIntent.Classify(pureRes),resLedger,new string('B',420));
+                Check(dedup.Contains(longTable) && !dedup.Contains(new string('B',420)),"Tabela longa de pesquisa foi duplicada na resposta final");
+            });
+            Test("casual narrative rodar comment stays conversation without false tool failure",()=>
+            {
+                string casual="pra poder rodar com o GAC. E aí anunciado que não vai sair pra terceiro, vai sair só pra os videogames rodando a 30 fps. E eu com a cara de pateta muito.";
+                Check(!FridaInteractionPolicy.ExplicitAction(casual),"Comentario casual marcado como acao explicita");
+                Check(!FridaRequestIntent.Classify(casual).RequiresTools,"Comentario casual exigiu ferramentas");
+                Check(FridaTaskRouting.Decide(casual,false,false).Kind==FridaTaskKind.Conversation,"Comentario casual saiu de Conversation");
+            });
+            foreach(string value in new[]{"Me ensine inglês","Quero aprender Python","Explique o aprendizado de máquina","Descubra como está o tempo em São Paulo","Pesquise formas de reduzir custos de frete","Vou aprender a dirigir amanhã"})
+            {string text=value;Test("operator learning is not skill evolution: "+text,()=>Check(FridaTaskRouting.Decide(text,false,false).Kind!=FridaTaskKind.SkillEvolution,"Pedido comum virou evolucao de skill"));}
+            foreach(string value in new[]{"Crie uma skill para consolidar os relatórios","Aprenda a gerar o relatório de placas pendentes","Frida, quero que você aprenda como exportar o PDF do Kanban","Vou te ensinar a conferir o estoque","Atualize suas skills com o POP novo","Adicione essa habilidade ao seu catálogo"})
+            {string text=value;Test("explicit skill request is skill evolution: "+text,()=>{var p=FridaTaskRouting.Decide(text,false,false);Check(p.Kind==FridaTaskKind.SkillEvolution && p.NeedsTeam,"Pedido de skill nao reconhecido: "+p.Kind);});}
+            Test("triage model routes a paraphrased skill request without keywords",()=>
+            {
+                string request="Guarde esse procedimento para repetir sozinha da próxima vez";
+                var plan=FridaTaskRouting.Decide(request,false,false);
+                Check(plan.Kind!=FridaTaskKind.SkillEvolution,"Regex nao deveria reconhecer esta redacao");
+                var d=FridaEconomyRouting.Parse("{\"kind\":\"skill_evolution\",\"complexity\":\"moderate\",\"requires_action\":true,\"answer\":\"\"}",plan);
+                FridaEconomyRouting.Apply(plan,d,request,false);
+                Check(d.Valid && plan.Kind==FridaTaskKind.SkillEvolution && plan.NeedsTeam && !d.AnswerDirectly,"Triagem nao levou a evolucao de skill: "+plan.Kind);
+                // The operator wanting to learn is never upgraded by the triage answer alone.
+                var chat=FridaTaskRouting.Decide("Me ensine inglês",false,false);
+                var c=FridaEconomyRouting.Parse("{\"kind\":\"conversation\",\"complexity\":\"simple\",\"requires_action\":false,\"answer\":\"Claro, vamos começar.\"}",chat);
+                FridaEconomyRouting.Apply(chat,c,"Me ensine inglês",false);
+                Check(chat.Kind!=FridaTaskKind.SkillEvolution,"Conversa virou evolucao de skill");
+            });
+            Test("skill complexity follows the manager and ignores the preposition com",()=>
+            {
+                Check(FridaSkillOrchestrator.ClassifyComplexity("Gere um relatório com os dados do mês",null)==FridaSkillComplexity.Low,"Preposicao 'com' elevou a complexidade");
+                Check(FridaSkillOrchestrator.ClassifyComplexity("Gere um relatório com os dados do mês","High")==FridaSkillComplexity.High,"Avaliacao do gestor ignorada");
+                Check(FridaSkillOrchestrator.ClassifyComplexity("Automação COM do SolidWorks para exportar desenhos","Low")==FridaSkillComplexity.Low,"Avaliacao do gestor ignorada (Low)");
+                Check(FridaSkillOrchestrator.ClassifyComplexity("Automação COM do SolidWorks para exportar desenhos","")==FridaSkillComplexity.High,"Automacao COM nao reconhecida");
+                Check(FridaSkillOrchestrator.ClassifyComplexity("Converta o CSV em JSON","")==FridaSkillComplexity.Medium,"Conversao de formato nao reconhecida");
+            });
+            Test("trivial verification commands are recognised",()=>
+            {
+                foreach(string trivial in new[]{"","Write-Output 'OK'","write-host ok","echo ok","exit 0","$true","'OK'"})
+                    Check(FridaSkillRegistry.IsTrivialVerification(trivial),"Comando trivial aceito: "+trivial);
+                foreach(string real in new[]{"python run.py --check","& .\\run.ps1 -Check","python run.py --check; Write-Output 'OK'","pytest -q"})
+                    Check(!FridaSkillRegistry.IsTrivialVerification(real),"Comando real recusado: "+real);
+            });
             if(options.Contains("--drive-smoke"))
             {
                 foreach(string folder in new[]{"PLB_INTERNO","JSA_INTERNO"})
@@ -225,7 +323,11 @@ namespace FridaAgent
                     }
                 });
             }
+            KeywordFreeTests.Run(Test);
             WhatsAppTests.Run(Test);
+            CodingCopilotTests.Run(Test);
+            IdeTests.Run(Test);
+            VoiceRecognitionTests.Run(Test);
             Console.WriteLine("RESULT passed="+_passed+" failed="+_failed);return _failed==0?0:1;
         }
     }

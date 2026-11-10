@@ -1,4 +1,4 @@
-﻿// language: C# 5 (.NET Framework 4.8), file: ZeldaConsumptionViews.cs, target: Windows 10/11 x64
+// language: C# 5 (.NET Framework 4.8), file: ZeldaConsumptionViews.cs, target: Windows 10/11 x64
 // Visoes de consumo real do painel Zelda: lateral "Consumo ao vivo", HUD de telemetria,
 // sala "Consumo & Historico", botoes de gerenciamento e teste real de modelo.
 using System;
@@ -17,8 +17,8 @@ namespace FridaAgent
     {
         private static readonly CultureInfo Br = CultureInfo.GetCultureInfo("pt-BR");
 
-        private static Rectangle SidePanelRect { get { return new Rectangle(980, 76, 385, 712); } }
-        private static Rectangle HudRect { get { return new Rectangle(14, 510, 952, 278); } }
+        private Rectangle SidePanelRect { get { int width = Math.Max(300, Math.Min(385, LayoutSize.Width * 28 / 100)); return new Rectangle(LayoutSize.Width - width - 14, 76, width, Math.Max(300, LayoutSize.Height - 88)); } }
+        private Rectangle HudRect { get { return new Rectangle(14, Math.Max(400, LayoutSize.Height - 290), Math.Max(600, SidePanelRect.X - 28), 278); } }
 
         private string _selectedKey = null;
         private string _hoverPanelKey = null;
@@ -132,6 +132,7 @@ namespace FridaAgent
 
         private void OnSidePanelWheel(object sender, MouseEventArgs e)
         {
+            e = LogicalMouse(e);
             if (!SidePanelRect.Contains(e.Location)) return;
             _panelScroll += e.Delta > 0 ? -2 : 2;
             if (_panelScroll < 0) _panelScroll = 0;
@@ -175,7 +176,9 @@ namespace FridaAgent
             bool isGoogle = false;
             string tokenField = "max_tokens";
 
-            if (bucket.Contains("groq")) { url = "https://api.groq.com/openai/v1/chat/completions"; key = _settings.groq_api_key; tokenField = "max_completion_tokens"; }
+            if (bucket.Contains("deepseek")) { url = "https://api.deepseek.com/chat/completions"; key = _settings.deepseek_api_key; tokenField = "max_tokens"; }
+            else if (bucket.Contains("kimi") || bucket.Contains("moonshot")) { url = "https://api.moonshot.ai/v1/chat/completions"; key = _settings.kimi_api_key; tokenField = "max_tokens"; }
+            else if (bucket.Contains("groq")) { url = "https://api.groq.com/openai/v1/chat/completions"; key = _settings.groq_api_key; tokenField = "max_completion_tokens"; }
             else if (bucket.Contains("cerebras")) { url = "https://api.cerebras.ai/v1/chat/completions"; key = _settings.cerebras_api_key; tokenField = "max_completion_tokens"; }
             else if (bucket.Contains("openrouter")) { url = "https://openrouter.ai/api/v1/chat/completions"; key = _settings.openrouter_api_key; }
             else if (bucket.Contains("zai")) { url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"; key = _settings.zai_glm_api_key; }
@@ -195,7 +198,8 @@ namespace FridaAgent
                 Dictionary<string, object> body = new Dictionary<string, object>();
                 body["model"] = stats.ModelId;
                 body["messages"] = new object[] { new Dictionary<string, object> { { "role", "user" }, { "content", "Responda apenas: ok" } } };
-                body[tokenField] = 32;
+                body[tokenField] = (bucket.Contains("kimi") || bucket.Contains("moonshot")) ? 128 : 32;
+                if (bucket.Contains("kimi") || bucket.Contains("moonshot")) body["temperature"] = 1.0;
                 json = _json.Serialize(body);
             }
 

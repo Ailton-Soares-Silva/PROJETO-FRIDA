@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -78,6 +78,7 @@ namespace FridaAgent
                             // Requests are serialized: an unparseable line can only be the one in flight.
                             if(kind=="protocol_error")throw new InvalidDataException("O leitor rejeitou o pedido: "+Value(item,"message"));
                             if(Value(item,"request_id")!=id)continue;
+                            if(kind=="qr") { FridaWhatsAppSource.PublishQr(Value(item,"png_base64")); continue; }
                             if(kind=="progress")
                             {
                                 stage=Value(item,"stage");if(!cancelSent){int seconds;timeout=int.TryParse(Value(item,"timeout_seconds"),out seconds)?Math.Min(240,seconds)+15:135;stageWatch.Restart();}

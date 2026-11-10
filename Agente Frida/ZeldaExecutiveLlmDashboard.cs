@@ -7,6 +7,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
@@ -75,6 +76,39 @@ namespace FridaAgent
     public partial class ZeldaExecutiveLlmDashboard : Form
     {
         private static ZeldaExecutiveLlmDashboard _instance;
+        private static Action<DashboardRoom?, string> _ideHost;
+        public static void ConfigureIdeHost(Action<DashboardRoom?, string> host) { _ideHost = host; }
+        private bool _embeddedLayout;
+        private float EmbeddedScale { get { return Math.Max(0.1f, Math.Min(ClientSize.Width / 1200f, ClientSize.Height / 760f)); } }
+        private Size LayoutSize { get { return _embeddedLayout ? new Size((int)Math.Round(ClientSize.Width / EmbeddedScale), (int)Math.Round(ClientSize.Height / EmbeddedScale)) : ClientSize; } }
+        public void EnableEmbeddedLayout()
+        {
+            _embeddedLayout = true; TopLevel = false; FormBorderStyle = FormBorderStyle.None; Dock = DockStyle.Fill;
+            Resize += delegate { InitRoomTabs(); UpdateCharacterSlotsForCurrentRoom(); Invalidate(); };
+            InitRoomTabs(); ConfigureDashboardMenu();
+            if (_meetingLog != null && !_meetingLog.IsDisposed) _meetingLog.Visible = false;
+            if (_txtMeetingTopic != null && !_txtMeetingTopic.IsDisposed) _txtMeetingTopic.Visible = false;
+        }
+        private MouseEventArgs LogicalMouse(MouseEventArgs e)
+        {
+            return _embeddedLayout ? new MouseEventArgs(e.Button, e.Clicks, (int)(e.X / EmbeddedScale), (int)(e.Y / EmbeddedScale), e.Delta) : e;
+        }
+        public List<ModelRuntimeStats> AccessibleModels() { return GetPanelStats(); }
+        public void SelectAccessibleModel(string bucket, string model)
+        {
+            var models = GetPanelStats();
+            int index = models.FindIndex(item => item.Bucket == bucket && item.ModelId == model);
+            if (index >= 0) { _selectedCharIndex = index; Invalidate(); }
+        }
+        public void TestAccessibleModel(ModelRuntimeStats model) { if (!_isTestingNow && model != null) ExecuteModelPingTestAsync(model); }
+        public void PreferAccessibleModel(ModelRuntimeStats model)
+        {
+            if (model == null) return;
+            if (ModelQuotaGuard.GetPreferenceRank(model.Bucket, model.ModelId) == int.MaxValue) ModelQuotaGuard.MakePreferred(model.Bucket, model.ModelId);
+            else ModelQuotaGuard.RemovePreferred(model.Bucket, model.ModelId);
+            Invalidate();
+        }
+
         private static readonly object _instanceLock = new object();
 
         private readonly FridaSettings _settings;
@@ -141,38 +175,54 @@ namespace FridaAgent
             return _currentRoom == DashboardRoom.Consumption ? ModelQuotaGuard.GetAllStats() : FridaTeamState.DashboardStats(_settings);
         }
 
+        private string _teamSyncKey;
+        // Runs on every animation frame (30 per second): the transcript is rebuilt only when the
+        // meeting changed, and shown without Markdown or JSON symbols.
         private void SyncTeamPresentation()
         {
-            _meetingTranscript.Clear();
-            foreach (TeamMessage message in FridaTeamState.Transcript())
-            {
-                TeamMember member = FridaTeamState.Member(message.Role);
-                string body = "Para: " + message.Recipients + "\n" + message.Text;
-                _meetingTranscript.Add(new MeetingSpeechTurn(message.Title, message.Model, member.Sprite, body,
-                    message.Success ? Color.FromArgb(100, 210, 180) : Color.FromArgb(255, 155, 90)));
-            }
+            if (IsDisposed || Disposing) return;
+            var transcript = FridaTeamState.Transcript();
             _isMeetingRunning = FridaTeamState.IsMeetingRunning;
             _meetingConsensus = FridaTeamState.LastReport;
             if (_isMeetingRunning) _activeMeetingTopic = FridaTeamState.Topic;
-            if (_meetingLog != null)
+            bool logReady = _meetingLog != null && !_meetingLog.IsDisposed && _meetingLog.IsHandleCreated;
+            string key = transcript.Count + "|" + (transcript.Count > 0 ? transcript[transcript.Count - 1].Id : "") + "|" + _isMeetingRunning + "|" + (_meetingConsensus ?? "").Length + "|" + logReady;
+            if (key == _teamSyncKey) return;
+            _teamSyncKey = key;
+            _meetingTranscript.Clear();
+            var plain = transcript.Select(m => FridaMarkdown.ToPlain(FridaMarkdown.Readable(m.Text))).ToList();
+            for (int i = 0; i < transcript.Count; i++)
             {
-                StringBuilder log = new StringBuilder();
-                foreach (TeamMessage message in FridaTeamState.Transcript())
+                TeamMessage message = transcript[i];
+                TeamMember member = FridaTeamState.Member(message.Role);
+                string body = "Para: " + message.Recipients + " · " + System.Text.RegularExpressions.Regex.Replace(plain[i], @"\s+", " ").Trim();
+                _meetingTranscript.Add(new MeetingSpeechTurn(message.Title, message.Model, member.Sprite, body,
+                    message.Success ? Color.FromArgb(100, 210, 180) : Color.FromArgb(255, 155, 90)));
+            }
+            if (logReady)
+            {
+                try
                 {
-                    log.AppendLine(message.Title + " -> " + message.Recipients + " [" + message.Model + "]");
-                    log.AppendLine(message.Text);
-                    log.AppendLine();
+                    StringBuilder log = new StringBuilder();
+                    for (int i = 0; i < transcript.Count; i++)
+                    {
+                        TeamMessage message = transcript[i];
+                        log.AppendLine(message.Title + " -> " + message.Recipients + " [" + message.Model + "]");
+                        log.AppendLine(plain[i]);
+                        log.AppendLine();
+                    }
+                    if (log.Length == 0) log.Append(_isMeetingRunning ? "Reuniao em andamento. Aguardando a primeira resposta real." : "Digite uma solicitacao e inicie a reuniao. O gestor planeja, o tecnico executa, o analista audita e a Frida apresenta o resultado.");
+                    if (!string.IsNullOrEmpty(_meetingConsensus)) log.AppendLine("RELATO FINAL DA FRIDA\n" + FridaMarkdown.ToPlain(_meetingConsensus));
+                    string value = log.ToString();
+                    if (value != _lastMeetingLog)
+                    {
+                        _lastMeetingLog = value;
+                        _meetingLog.Text = value;
+                        _meetingLog.SelectionStart = _meetingLog.TextLength;
+                        _meetingLog.ScrollToCaret();
+                    }
                 }
-                if (log.Length == 0) log.Append(_isMeetingRunning ? "Reuniao em andamento. Aguardando a primeira resposta real." : "Digite uma solicitacao e inicie a reuniao. O gestor planeja, o tecnico executa, o analista audita e a Frida apresenta o resultado.");
-                if (!string.IsNullOrEmpty(_meetingConsensus)) log.AppendLine("RELATO FINAL DA FRIDA\n" + _meetingConsensus);
-                string value = log.ToString();
-                if (value != _lastMeetingLog)
-                {
-                    _lastMeetingLog = value;
-                    _meetingLog.Text = value;
-                    _meetingLog.SelectionStart = _meetingLog.TextLength;
-                    _meetingLog.ScrollToCaret();
-                }
+                catch { }
             }
         }
 
@@ -183,6 +233,7 @@ namespace FridaAgent
 
         public static void ShowOrFocusAndStartMeeting(FridaSettings settings, string configPath, Action openSettingsAction, DashboardRoom? targetRoom, string meetingTopic)
         {
+            if (_ideHost != null) { _ideHost(targetRoom, meetingTopic); return; }
             lock (_instanceLock)
             {
                 if (_instance == null || _instance.IsDisposed)
@@ -251,25 +302,25 @@ namespace FridaAgent
             _animTimer.Interval = 33;
             _animTimer.Tick += delegate
             {
+                if (IsDisposed || Disposing || !IsHandleCreated || !Visible) return;
                 _animTick++;
                 SyncTeamPresentation();
                 if (_animTick % 15 == 0) UpdateCharacterSlotsForCurrentRoom();
                 UpdateActorSimulation();
                 _cloudOffset += 0.35f;
                 if (_cloudOffset > 950f) _cloudOffset = 0f;
-                Invalidate();
+                try { if (!IsDisposed && IsHandleCreated) Invalidate(); } catch { }
             };
             _animTimer.Start();
 
             MouseMove += OnDashboardMouseMove;
             MouseDown += OnDashboardMouseDown;
-            MouseWheel += OnSidePanelWheel;
+            MouseWheel += (sender, e) => OnSidePanelWheel(sender, LogicalMouse(e));
             FormClosed += delegate
             {
                 if (_animTimer != null)
                 {
-                    _animTimer.Stop();
-                    _animTimer.Dispose();
+                    try { _animTimer.Stop(); _animTimer.Dispose(); } catch { }
                     _animTimer = null;
                 }
                 lock (_instanceLock)
@@ -277,6 +328,23 @@ namespace FridaAgent
                     if (_instance == this) _instance = null;
                 }
             };
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (_animTimer != null)
+                {
+                    try { _animTimer.Stop(); _animTimer.Dispose(); } catch { }
+                    _animTimer = null;
+                }
+                lock (_instanceLock)
+                {
+                    if (_instance == this) _instance = null;
+                }
+            }
+            base.Dispose(disposing);
         }
 
         private void InitRoomTabs()
@@ -298,7 +366,7 @@ namespace FridaAgent
             _txtMeetingTopic.Location = new Point(HudRect.X + 144, HudRect.Y + 13);
             _txtMeetingTopic.Size = new Size(HudRect.Width - 340, 24);
             _txtMeetingTopic.Text = _activeMeetingTopic;
-            _txtMeetingTopic.Visible = (_currentRoom == DashboardRoom.MeetingRoom);
+            _txtMeetingTopic.Visible = (!_embeddedLayout && _currentRoom == DashboardRoom.MeetingRoom);
             _txtMeetingTopic.KeyDown += delegate(object s, KeyEventArgs ke)
             {
                 if (ke.KeyCode == Keys.Enter && !_isMeetingRunning)
@@ -317,7 +385,7 @@ namespace FridaAgent
             _meetingLog.BorderStyle = BorderStyle.FixedSingle;
             _meetingLog.Location = new Point(HudRect.X + 8, HudRect.Y + 76);
             _meetingLog.Size = new Size(HudRect.Width - 16, HudRect.Height - 84);
-            _meetingLog.Visible = _currentRoom == DashboardRoom.MeetingRoom;
+            _meetingLog.Visible = !_embeddedLayout && _currentRoom == DashboardRoom.MeetingRoom;
             _meetingLog.ScrollBars = RichTextBoxScrollBars.Vertical;
             Controls.Add(_meetingLog);
             SyncTeamPresentation();
@@ -326,12 +394,12 @@ namespace FridaAgent
         public void SwitchRoom(DashboardRoom room)
         {
             _currentRoom = room;
-            if (_meetingLog != null) _meetingLog.Visible = room == DashboardRoom.MeetingRoom;
-            if (_txtMeetingTopic != null)
+            if (_meetingLog != null && !_meetingLog.IsDisposed) _meetingLog.Visible = !_embeddedLayout && room == DashboardRoom.MeetingRoom;
+            if (_txtMeetingTopic != null && !_txtMeetingTopic.IsDisposed)
             {
                 _txtMeetingTopic.Location = new Point(HudRect.X + 144, HudRect.Y + 13);
                 _txtMeetingTopic.Size = new Size(HudRect.Width - 340, 24);
-                _txtMeetingTopic.Visible = (_currentRoom == DashboardRoom.MeetingRoom);
+                _txtMeetingTopic.Visible = (!_embeddedLayout && _currentRoom == DashboardRoom.MeetingRoom);
                 if (_txtMeetingTopic.Visible)
                 {
                     _txtMeetingTopic.Focus();
@@ -368,7 +436,7 @@ namespace FridaAgent
                 _selectedCharIndex = Math.Max(0, statsList.Count - 1);
             }
 
-            Rectangle room = new Rectangle(14, 76, SidePanelRect.X - 28, 426);
+            Rectangle room = new Rectangle(14, 76, SidePanelRect.X - 28, Math.Max(220, HudRect.Y - 84));
             bool roomChanged = (_lastSimulatedRoom != _currentRoom);
             _lastSimulatedRoom = _currentRoom;
 
@@ -409,7 +477,7 @@ namespace FridaAgent
         {
             if (_currentRoom == DashboardRoom.Consumption) return;
 
-            Rectangle room = new Rectangle(14, 76, SidePanelRect.X - 28, 426);
+            Rectangle room = new Rectangle(14, 76, SidePanelRect.X - 28, Math.Max(220, HudRect.Y - 84));
             List<ModelRuntimeStats> statsList = GetPanelStats();
 
             for (int i = 0; i < _actors.Length; i++)
@@ -762,6 +830,7 @@ namespace FridaAgent
 
         private void OnDashboardMouseMove(object sender, MouseEventArgs e)
         {
+            e = LogicalMouse(e);
             int oldHoverTab = _hoveredTab;
             _hoveredTab = -1;
             for (int t = 0; t < _roomTabRects.Length; t++)
@@ -804,6 +873,7 @@ namespace FridaAgent
 
         private void OnDashboardMouseDown(object sender, MouseEventArgs e)
         {
+            e = LogicalMouse(e);
             if (e.Button != MouseButtons.Left) return;
 
             // 1. Clique nas Abas de Salas
@@ -943,6 +1013,7 @@ namespace FridaAgent
         {
             base.OnPaint(e);
             Graphics g = e.Graphics;
+            if (_embeddedLayout) g.ScaleTransform(EmbeddedScale, EmbeddedScale);
             g.SmoothingMode = SmoothingMode.None; // Authentic 32-bit pixel sharpness
             g.InterpolationMode = InterpolationMode.NearestNeighbor;
             g.PixelOffsetMode = PixelOffsetMode.Half;
@@ -956,11 +1027,11 @@ namespace FridaAgent
 
             // 3. Active 32-bit Pixel Room Environment (74 - 380)
             // Area das salas mantem 856x302 (arte original); a direita fica o painel "Consumo ao vivo"
-            Rectangle roomViewport = new Rectangle(14, 76, SidePanelRect.X - 28, 426);
+            Rectangle roomViewport = new Rectangle(14, 76, SidePanelRect.X - 28, Math.Max(220, HudRect.Y - 84));
             DrawLiveConsumptionPanel(g);
             if (_currentRoom == DashboardRoom.Consumption)
             {
-                DrawConsumptionRoom(g, new Rectangle(12, 76, SidePanelRect.X - 24, ClientSize.Height - 88));
+                DrawConsumptionRoom(g, new Rectangle(12, 76, SidePanelRect.X - 24, LayoutSize.Height - 88));
                 return;
             }
             g.SetClip(roomViewport);
@@ -1003,14 +1074,14 @@ namespace FridaAgent
 
         private void DrawHeaderBanner(Graphics g)
         {
-            Rectangle headerRect = new Rectangle(0, 0, ClientSize.Width, 42);
+            Rectangle headerRect = new Rectangle(0, 0, LayoutSize.Width, 42);
             using (SolidBrush bg = new SolidBrush(Color.FromArgb(14, 20, 38)))
             {
                 g.FillRectangle(bg, headerRect);
             }
             using (Pen goldPen = new Pen(Color.FromArgb(218, 165, 32), 2))
             {
-                g.DrawLine(goldPen, 0, 42, ClientSize.Width, 42);
+                g.DrawLine(goldPen, 0, 42, LayoutSize.Width, 42);
             }
 
             using (Font titleFont = new Font("Segoe UI", 11.0f, FontStyle.Bold))
@@ -1043,7 +1114,7 @@ namespace FridaAgent
                     totFont, totBrush, 470, 12);
             }
 
-            int rx = ClientSize.Width - 360;
+            int rx = LayoutSize.Width - 360;
             int ry = 13;
             using (Font countFont = new Font("Segoe UI", 9.0f, FontStyle.Regular))
             using (SolidBrush textBrush = new SolidBrush(Color.FromArgb(200, 220, 245)))
@@ -1511,11 +1582,12 @@ namespace FridaAgent
             using (SolidBrush bg = new SolidBrush(Color.FromArgb(15, 15, 20)))
             using (Pen p = new Pen(Color.FromArgb(60, 60, 80), 2))
             using (Font f = new Font("Consolas", 9.0f, FontStyle.Bold))
+            using (Font caption = new Font("Segoe UI", 6.5f, FontStyle.Bold)) // was created per frame and never disposed (GDI leak)
             using (SolidBrush text = new SolidBrush(Color.FromArgb(255, 60, 60)))
             {
                 g.FillRectangle(bg, x, y, 190, 42);
                 g.DrawRectangle(p, x, y, 190, 42);
-                g.DrawString("ALARME DE COOLDOWN", new Font("Segoe UI", 6.5f, FontStyle.Bold), text, x + 8, y + 3);
+                g.DrawString("ALARME DE COOLDOWN", caption, text, x + 8, y + 3);
 
                 List<ModelRuntimeStats> statsList = GetPanelStats();
                 TimeSpan maxCooldown = TimeSpan.Zero;

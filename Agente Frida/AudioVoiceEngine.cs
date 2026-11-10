@@ -1,4 +1,4 @@
-﻿// language: C# 5 (.NET Framework 4.8), file: AudioVoiceEngine.cs, target: Windows 10/11 x64
+// language: C# 5 (.NET Framework 4.8), file: AudioVoiceEngine.cs, target: Windows 10/11 x64
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -149,6 +149,7 @@ namespace FridaAgent
 
         private DateTime _followUpDeadlineUtc = DateTime.MinValue;
         private DateTime _ignoreMicUntilUtc = DateTime.MinValue;
+        private DateTime _lastVerifiedUserVoiceUtc = DateTime.MinValue;
         private static DateTime _networkOutageBackoffUntilUtc = DateTime.MinValue;
 
         private static bool IsNetworkOutageException(Exception ex)
@@ -174,6 +175,7 @@ namespace FridaAgent
         // Explicit foreground command capture (after F4, Tray click, Wake-Only greeting, or Follow-Up)
         private bool _capturingActiveCommand = false;
         private bool _includeWakeStrip = false;
+        private FridaCaptureMetrics _captureMetrics = new FridaCaptureMetrics();
         private bool _heardVoiceInActive = false;
         private bool _heardVoiceAfterWake;
         private int _wakePostVoiceFrames;
@@ -264,7 +266,7 @@ namespace FridaAgent
                 if(!_settings.speaker_lock_enabled)return "Identificacao de voz desligada; o detector de fala ignora ruidos, mas aceita qualquer voz.";
                 if(!SpeakerVoiceProfile.EngineAvailable)return "Verificador de voz indisponivel: "+SpeakerVoiceProfile.EngineError;
                 if(!_voiceProfile.IsReady)return _voiceProfile.HasLegacyProfile?"O perfil antigo foi desativado. Cadastre sua voz (5 frases curtas) para liberar a escuta.":"Cadastre sua voz (5 frases curtas). A escuta fica bloqueada ate la.";
-                return "Voz cadastrada. Somente a sua voz e transcrita; ruidos e outras vozes sao ignorados.";
+                return "Voz cadastrada. Os comandos passam pela verificacao de locutor; vozes sobrepostas podem exigir repeticao.";
             }
         }
         private bool HandsFreeProfileReady {get{return !_settings.speaker_lock_enabled || _voiceProfile.IsReady;}}
@@ -292,8 +294,9 @@ namespace FridaAgent
                 _offRequested=true;Interlocked.Increment(ref _inputEpoch);
                 _capturingActiveCommand=false;_followUpWindowActive=false;_preRollQueue.Clear();_consecutiveVoiceFrames=0;
                 if(_activeCapturePcm!=null){_activeCapturePcm.Dispose();_activeCapturePcm=null;}
+                lock(_controlAudioSync)_controlPreRoll.Clear();
                 if(_localWake!=null)_localWake.Reset();
-                _enrollment=new VoiceEnrollmentSession(_voiceProfile,_selectedMicName,mode);
+                _enrollment=new VoiceEnrollmentSession(_voiceProfile,_selectedMicName,mode,tolerance:_settings.speaker_lock_tolerance);
             }
             var session=_enrollment;
             session.Completion.ContinueWith(t=>
@@ -327,12 +330,48 @@ namespace FridaAgent
         {byte[] ignored;return PassesSpeakerLock(wav,where,false,out ignored);}
 
         /// <summary>Filtro "so a minha voz". filtered recebe o audio somente com a sua voz quando havia outra voz junto.
-        /// allowInconclusive: chamada curta ("Frida") que nao da para identificar abre a escuta; o comando seguinte e verificado.</summary>
+        /// Chamadas inconclusivas tambem sao recusadas; usar "Oi Frida" fornece mais fala para identificar.</summary>
         private bool PassesSpeakerLock(byte[] wav,string where,bool allowInconclusive,out byte[] filtered)
         {return PassesSpeakerLock(wav,where,allowInconclusive,0.0,out filtered);}
 
         /// <summary>extraMargin: folga exigida acima do limiar. Usada enquanto a Frida fala, porque o eco da propria
         /// voz no microfone chega a pontuar 0,51-0,57 contra limiar 0,50 e interrompia as explicacoes.</summary>
+        internal static bool EvaluatePriorityControlSpeaker(SpeakerCheckResult result,bool isSpeaking,out double effectiveThreshold,out string reason)
+        {
+            effectiveThreshold=0.50;
+            reason=result!=null ? (result.Reason ?? "") : "resultado ausente";
+            if(result==null){return false;}
+            // Nao contorna rejeicao de qualidade, mistura de vozes ou identidade durante a TTS.
+            effectiveThreshold=Math.Max(0.58,result.Threshold);
+            if(result.Inconclusive || result.SpeechSeconds<SpeakerVoiceProfile.MinVerifySeconds)
+            {
+                reason=string.IsNullOrWhiteSpace(result.Reason)?"fala curta demais para identificar":result.Reason;
+                return false;
+            }
+            if(result.Accepted && result.Score>=effectiveThreshold)
+            {
+                reason=isSpeaking?"sua voz sobreposta a reproducao":"sua voz";
+                return true;
+            }
+            reason="voz abaixo do limiar de controle ("+effectiveThreshold.ToString("F3")+")";
+            return false;
+        }
+
+        private bool PassesPriorityControlSpeakerLock(byte[] wav,bool isSpeaking)
+        {
+            if(!_settings.speaker_lock_enabled)return IsHumanVocalFormantCandidate(wav);
+            if(_voiceProfile==null || !_voiceProfile.IsReady)return false;
+            try
+            {
+                var result=_voiceProfile.CheckShortInteraction(wav,_settings.speaker_lock_tolerance);
+                double effectiveThreshold;string reason;
+                bool accepted=EvaluatePriorityControlSpeaker(result,isSpeaking,out effectiveThreshold,out reason);
+                BootLogger.Log("FiltroVoz [controle prioritario]: "+(accepted?"ACEITO":"DESCARTADO")+" ("+reason+"; score="+result.Score.ToString("F3")+"/"+effectiveThreshold.ToString("F3")+"; fala="+result.SpeechSeconds.ToString("F1")+"s)");
+                return accepted;
+            }
+            catch(Exception ex){BootLogger.Log("FiltroVoz bloqueou controle apos falha: "+ex.GetType().Name+": "+ex.Message);return false;}
+        }
+
         private bool PassesSpeakerLock(byte[] wav,string where,bool allowInconclusive,double extraMargin,out byte[] filtered)
         {
             filtered=null;
@@ -340,13 +379,13 @@ namespace FridaAgent
             if(_voiceProfile==null || !_voiceProfile.IsReady)return false;
             try
             {
-                var result=_voiceProfile.Check(wav,_settings.speaker_lock_tolerance);
-                bool accepted=result.Accepted || (allowInconclusive && result.Inconclusive);
+                var result=allowInconclusive ? _voiceProfile.CheckShortInteraction(wav,_settings.speaker_lock_tolerance) : _voiceProfile.Check(wav,_settings.speaker_lock_tolerance);
+                bool accepted=result.Accepted && !result.Inconclusive;
                 string reason=result.Reason;
                 if(accepted && extraMargin>0 && result.Score<result.Threshold+extraMargin)
                 {accepted=false;reason="provavel eco da propria fala; exige score >= "+(result.Threshold+extraMargin).ToString("F3")+" durante a reproducao";}
                 BootLogger.Log("FiltroVoz ["+where+"]: "+(accepted?"ACEITO":"DESCARTADO")+" ("+reason+"; score="+result.Score.ToString("F3")+"/"+result.Threshold.ToString("F3")+"; fala="+result.SpeechSeconds.ToString("F1")+"s)");
-                if(accepted)filtered=result.FilteredWav;
+                if(accepted){filtered=result.FilteredWav;if(where=="comando")_lastVerifiedUserVoiceUtc=DateTime.UtcNow;}
                 return accepted;
             }
             catch(Exception ex){BootLogger.Log("FiltroVoz bloqueou audio apos falha: "+ex.GetType().Name+": "+ex.Message);return false;}
@@ -686,18 +725,24 @@ namespace FridaAgent
 
         private void HandleLocalRecognition(string text)
         {
+            if (IsEnrollingVoice) return; // "Frida, pare" e uma frase de cadastro, nao uma ordem.
             var command=FridaSessionControl.Parse(text);
             if(command!=FridaControlCommand.None)
             {
+                if(command==FridaControlCommand.Off && !FridaSessionControl.IsAddressedControl(text))return;
                 if(_settings.speaker_lock_enabled && !_voiceProfile.HasRefinedProfile)return;
                 byte[] pcm;lock(_controlAudioSync)pcm=_controlPreRoll.SelectMany(x=>x).ToArray();
                 if(pcm.Length<3200 || IsPlaybackEcho(pcm))return;
                 byte[] wav=BuildWavFromPcm16Mono(pcm,SampleRate);
-                byte[] unusedControl;
-                bool accepted=IsEnrollingVoice && !_voiceProfile.IsReady ? IsHumanVocalFormantCandidate(wav)
-                    : PassesSpeakerLock(wav,"controle prioritario",false,_isSpeaking?BargeInMargin:0.0,out unusedControl);
+                bool accepted=PassesPriorityControlSpeakerLock(wav,_isSpeaking);
+                if(!accepted && CanStopAuthenticatedPlayback(text,command,_isSpeaking || _isBusyProcessingTurn,
+                    (DateTime.UtcNow-_lastVerifiedUserVoiceUtc).TotalSeconds) && IsHumanVocalFormantCandidate(wav))
+                {accepted=true;BootLogger.Log("Parada local: interrompendo sessao autenticada sob mistura com TTS.");}
                 if(!accepted || (DateTime.UtcNow-_lastControlUtc).TotalMilliseconds<400)return;
                 _lastControlUtc=DateTime.UtcNow;
+                BootLogger.Log("Controle local confirmado: "+command+"; hipotese="+text);
+                lock(_controlAudioSync)_controlPreRoll.Clear();
+                if(_localWake!=null)_localWake.Reset();
                 StopCurrentSpeech();
                 if(OnPriorityControl!=null)OnPriorityControl(command);
                 return;
@@ -705,11 +750,19 @@ namespace FridaAgent
             if(ContainsWakeWordPhonetic(text))CheckWakeTriggerFromWinRt();
         }
 
+        internal static bool CanStopAuthenticatedPlayback(string text,FridaControlCommand command,bool busy,double ageSeconds)
+        {
+            if(command!=FridaControlCommand.Stop || !busy || ageSeconds<0 || ageSeconds>120 || double.IsNaN(ageSeconds))return false;
+            string t=FridaInteractionPolicy.Normalize(text);
+            return t=="pare" || t=="pare de falar" || t=="para de falar" || FridaSessionControl.IsAddressedControl(text);
+        }
+
         public void EnterOff()
         {
             FridaRuntimeHealth.State("inativa","off solicitado pelo operador");
             _offRequested=true;Interlocked.Increment(ref _inputEpoch);
             StopCurrentSpeech();CancelVoiceEnrollment();CancelFollowUpAndHide();
+            lock(_controlAudioSync)_controlPreRoll.Clear();
             if(_localWake!=null)_localWake.Reset();
             if(_orb!=null)_orb.SetActivityState(OrbActivityState.Hidden,"FRIDA · OFF","");
         }
@@ -754,6 +807,7 @@ namespace FridaAgent
 
                 _followUpWindowActive = false;
                 _capturingActiveCommand = true;
+                _captureMetrics = new FridaCaptureMetrics();
                 _includeWakeStrip = fromWakeWord;
                 _activeStartedUtc = DateTime.UtcNow;
                 _activeCaptureEpoch=Volatile.Read(ref _inputEpoch);
@@ -958,14 +1012,102 @@ namespace FridaAgent
             }
         }
 
+        private readonly object _ideCaptureLock = new object();
+        private MemoryStream _ideCapture;
+        private int _idePlayback;
+        private TimeSpan _ideFollowUpRemaining;
+        private bool _ideWasFollowUp;
+        public bool IsIdeRecording { get { lock (_ideCaptureLock) return _ideCapture != null; } }
+        public void BeginIdeRecording()
+        {
+            if (IsEnrollingVoice || _isBusyProcessingTurn || _isSpeaking || _capturingActiveCommand || Volatile.Read(ref _idePlayback) != 0)
+                throw new InvalidOperationException("Aguarde o atendimento ou treinamento terminar para gravar.");
+            lock (_ideCaptureLock)
+            {
+                if (_ideCapture != null) throw new InvalidOperationException("Uma gravação já está ativa.");
+                _ideWasFollowUp = _followUpWindowActive;
+                _ideFollowUpRemaining = _followUpDeadlineUtc - DateTime.UtcNow;
+                lock (_recLock) { _preRollQueue.Clear(); _consecutiveVoiceFrames = 0; }
+                _ideCapture = new MemoryStream();
+            }
+        }
+        public byte[] FinishIdeRecording(bool cancel)
+        {
+            lock (_ideCaptureLock)
+            {
+                if (_ideCapture == null) return null;
+                using (var capture = _ideCapture)
+                {
+                    _ideCapture = null;
+                    if (_ideWasFollowUp && _ideFollowUpRemaining > TimeSpan.Zero) _followUpDeadlineUtc = DateTime.UtcNow + _ideFollowUpRemaining;
+                    return cancel || capture.Length == 0 ? null : BuildWavFromPcm16Mono(capture.ToArray(), SampleRate);
+                }
+            }
+        }
+        public async Task PlayIdeRecordingAsync(byte[] wav)
+        {
+            if (wav == null || IsIdeRecording || IsEnrollingVoice || _isBusyProcessingTurn || _capturingActiveCommand)
+                throw new InvalidOperationException("Aguarde o atendimento ou a gravação terminar para ouvir o áudio.");
+            await _speechGate.WaitAsync();
+            bool started = false;
+            try
+            {
+                lock (_ideCaptureLock)
+                {
+                    if (IsIdeRecording || IsEnrollingVoice || _isBusyProcessingTurn || _capturingActiveCommand)
+                        throw new InvalidOperationException("A Frida iniciou outro atendimento. Tente ouvir o áudio depois.");
+                    Interlocked.Exchange(ref _idePlayback, 1);
+                    _isSpeaking = true;
+                    started = true;
+                }
+                using (var memory = new MemoryStream(wav))
+                using (var player = new SoundPlayer(memory))
+                {
+                    lock (_speechSync) _activePlayer = player;
+                    await Task.Run(() => player.PlaySync());
+                }
+            }
+            finally
+            {
+                if (started)
+                {
+                    lock (_speechSync) _activePlayer = null;
+                    _isSpeaking = false;
+                    Interlocked.Exchange(ref _idePlayback, 0);
+                }
+                _speechGate.Release();
+            }
+        }
+
+        public async Task<string> TranscribeIdeRecordingAsync(byte[] wav)
+        {
+            if (wav == null || wav.Length < 45) throw new InvalidOperationException("A gravação não contém áudio. Verifique o microfone.");
+            var result = await TranscribeAudioAsync(wav, "ide");
+            if (result.Status == FridaTranscriptionStatus.Cancelled) throw new OperationCanceledException();
+            if (!result.IsOk) throw new InvalidOperationException(result.UserMessage);
+            return result.Text;
+        }
+
         private void ProcessMicPcmChunk(byte[] pcmBytes)
         {
+            if (Volatile.Read(ref _idePlayback) != 0) { _lastMicChunkUtc = DateTime.UtcNow; return; }
+            lock (_ideCaptureLock)
+            {
+                if (_ideCapture != null)
+                {
+                    int remaining = 300 * SampleRate * 2 - (int)_ideCapture.Length;
+                    if (remaining > 0) _ideCapture.Write(pcmBytes, 0, Math.Min(remaining, pcmBytes.Length));
+                    _lastMicChunkUtc = DateTime.UtcNow;
+                    return;
+                }
+            }
+
             _lastMicChunkUtc=DateTime.UtcNow;
             LastCaptureError=null;
-            lock(_controlAudioSync){_controlPreRoll.Enqueue((byte[])pcmBytes.Clone());while(_controlPreRoll.Count>PreRollChunks)_controlPreRoll.Dequeue();}
-            if(_localWake!=null && _running && !_paused)_localWake.Push(pcmBytes);
             var session=_enrollment;
             if(session!=null && session.IsActive){session.Push(pcmBytes);return;}
+            lock(_controlAudioSync){_controlPreRoll.Enqueue((byte[])pcmBytes.Clone());while(_controlPreRoll.Count>48)_controlPreRoll.Dequeue();}
+            if(_localWake!=null && _running && !_paused){_localWake.IsSpeakingPlayback=_isSpeaking;_localWake.Push(pcmBytes);}
             float rmsRaw;
             int peakSample;
             float[] bands16 = ComputePcmSpectrum16(pcmBytes, 0, pcmBytes.Length, out rmsRaw, out peakSample);
@@ -998,25 +1140,29 @@ namespace FridaAgent
             }
 
             bool hasVoice;
+            bool? neuralSpeech = null;
+            bool energyDecision = rmsRaw>=Math.Max(70.0,_noiseFloorRms*1.15) || peakSample>=Math.Max(900,(int)(_noiseFloorRms*4.0));
             var liveVad=_liveVad;
             if(liveVad!=null)
             {
                 // Silero VAD: so fala humana conta como voz. Ventilador, teclado, musica sem voz e cliques sao ignorados.
                 bool speech=false;
                 try{speech=liveVad.PushAndDetect(pcmBytes);}catch(Exception ex){_liveVad=null;BootLogger.Log("Silero VAD falhou, voltando ao limiar de energia: "+ex.GetType().Name);}
-                hasVoice=speech && (rmsRaw>=Math.Max(70.0,_noiseFloorRms*1.15) || peakSample>=Math.Max(900,(int)(_noiseFloorRms*4.0)));
+                neuralSpeech = _liveVad == null ? (bool?)null : speech;
+                hasVoice = speech && (!_settings.voice_vad_energy_gate || energyDecision);
             }
             else hasVoice = (rmsRaw >= dynamicThresh) || (peakSample >= Math.Max(1550, (int)(_noiseFloorRms * 6.2)));
 
             byte[] finishedActiveWav = null;
             bool activeWasWake = false;
             bool finishedLocalWakeOnly = false;
+            bool finishedTruncated = false;
             int finishedInputEpoch=Volatile.Read(ref _inputEpoch);
 
             lock (_recLock)
             {
                 // Hard acoustic echo shield: never record Frida's own speaker voice, active turn execution, or room decay into pre-roll!
-                if (_isSpeaking || _isBusyProcessingTurn || _paused || DateTime.UtcNow < _ignoreMicUntilUtc)
+                if (_isSpeaking || _paused)
                 {
                     _preRollQueue.Clear();
                     _consecutiveVoiceFrames = 0;
@@ -1028,6 +1174,8 @@ namespace FridaAgent
                 {
                     _preRollQueue.Dequeue();
                 }
+                // Preserva inicio da resposta durante a guarda pos-TTS/termino de processamento.
+                if(_isBusyProcessingTurn || DateTime.UtcNow < _ignoreMicUntilUtc)return;
 
                 // 1. Follow-up conversational window (orb already visible, no "Frida" prefix needed!)
                 if (!_capturingActiveCommand && _followUpWindowActive)
@@ -1042,6 +1190,7 @@ namespace FridaAgent
                         {
                             _followUpWindowActive = false;
                             _capturingActiveCommand = true;
+                            _captureMetrics = new FridaCaptureMetrics();
                             _includeWakeStrip = false;
                             _heardVoiceInActive = true;
                             _activeStartedUtc = DateTime.UtcNow;
@@ -1064,6 +1213,7 @@ namespace FridaAgent
                 // 2. Active Foreground Command Capture (F4, Tray click, WinRT wake, or Follow-Up)
                 if (_capturingActiveCommand && _activeCapturePcm != null)
                 {
+                    _captureMetrics.Observe(pcmBytes, neuralSpeech, energyDecision);
                     _activeCapturePcm.Write(pcmBytes, 0, pcmBytes.Length);
 
                     float normRms = Math.Min(1.35f, Math.Max(0.05f, (float)(rmsRaw - _noiseFloorRms * 0.7)) / 1300f);
@@ -1089,16 +1239,21 @@ namespace FridaAgent
                     double silenceSec = (now - _activeLastVoiceUtc).TotalSeconds;
 
                     bool endByWakeOnly=FridaVoiceTiming.WakeOnly(_includeWakeStrip,_heardVoiceAfterWake,totalSec,silenceSec);
-                    bool endBySilence = FridaVoiceTiming.EndBySilence(_heardVoiceInActive,totalSec,silenceSec);
+                    bool endBySilence = FridaVoiceTiming.EndBySilence(_heardVoiceInActive,totalSec,silenceSec,FridaVoiceOptions.EndSilence(_settings));
                     bool endByNoSpeech = !_heardVoiceInActive && totalSec >= FridaSessionControl.IdleSeconds;
                     bool endByMaxLen = totalSec >= 32.0;
 
                     if (endByWakeOnly || endBySilence || endByNoSpeech || endByMaxLen)
                     {
+                        FridaVoiceMetrics.Capture(_settings, _captureMetrics, endByMaxLen ? "max_length" : endByWakeOnly ? "wake_only" : endBySilence ? "silence" : "no_speech", (int)_selectedMicId);
                         _capturingActiveCommand = false;
                         activeWasWake = _includeWakeStrip;
                         finishedInputEpoch=_activeCaptureEpoch;
-                        if(endByWakeOnly)
+                        if(endByMaxLen && !endBySilence)
+                        {
+                            finishedTruncated = true;
+                        }
+                        else if(endByWakeOnly)
                         {
                             finishedLocalWakeOnly=true;
                             _followUpWindowActive=true;
@@ -1112,7 +1267,7 @@ namespace FridaAgent
                         _activeCapturePcm.Dispose();
                         _activeCapturePcm = null;
 
-                        if (finishedActiveWav == null && !finishedLocalWakeOnly)
+                        if (finishedActiveWav == null && !finishedLocalWakeOnly && !finishedTruncated)
                         {
                             _offRequested=false;
                             FridaRuntimeHealth.Inactivity();FridaRuntimeHealth.State("inativa","sem fala; aguardando nova chamada");
@@ -1123,6 +1278,15 @@ namespace FridaAgent
             }
 
 
+            if (finishedTruncated)
+            {
+                if (finishedInputEpoch != Volatile.Read(ref _inputEpoch) || _offRequested) return;
+                var truncated = FridaTranscriptionResult.Create(FridaTranscriptionStatus.LowQuality, "capture_limit");
+                FridaVoiceMetrics.Record(_settings, truncated, "command", (int)_selectedMicId);
+                EnterFollowUpConversationWindow();
+                if (_orb != null) _orb.SetActivityState(OrbActivityState.Listening, "FRIDA · REPITA", "A fala atingiu o limite. Divida o pedido e repita o comando completo.");
+                return;
+            }
             if(finishedLocalWakeOnly)
             {
                 if(finishedInputEpoch!=Volatile.Read(ref _inputEpoch) || _offRequested)return;
@@ -1141,7 +1305,7 @@ namespace FridaAgent
 
         private static bool IsHumanVocalFormantCandidate(byte[] audio)
         {
-            try{return SpeakerVoiceProfile.HasHumanSpeech(audio,0.3);}catch{return true;}
+            try{return SpeakerVoiceProfile.HasHumanSpeech(audio,0.20);}catch{return false;}
         }
 
         private static bool ContainsWakeWordPhonetic(string transcript)
@@ -1192,44 +1356,43 @@ namespace FridaAgent
             try
             {
             byte[] ownVoiceOnly=null;
-            if (!_running || _paused || IsEnrollingVoice || !PassesSpeakerLock(wavBytes, "comando", false, out ownVoiceOnly))
+            if (!_running || _paused || IsEnrollingVoice) return;
+            if (!PassesSpeakerLock(wavBytes, "comando", false, out ownVoiceOnly))
             {
+                var rejected = FridaTranscriptionResult.Create(FridaTranscriptionStatus.SpeakerRejected, "speaker_gate_rejected");
+                FridaVoiceMetrics.Record(_settings,rejected,"command",(int)_selectedMicId);
                 if(_running && !_paused && !IsEnrollingVoice && !_offRequested && HandsFreeProfileReady && DateTime.UtcNow<_followUpDeadlineUtc)
-                {_followUpWindowActive=true;if(_orb!=null)_orb.SetActivityState(OrbActivityState.Listening,"FRIDA · ATENDIMENTO","Pode falar.");}
+                {_followUpWindowActive=true;if(_orb!=null)_orb.SetActivityState(OrbActivityState.Listening,"FRIDA · ATENDIMENTO",rejected.UserMessage);}
                 else if (_orb != null) _orb.SetActivityState(OrbActivityState.Hidden, "FRIDA", "");
                 return;
             }
 
             if (_orb != null) _orb.SetActivityState(OrbActivityState.Thinking, "FRIDA · PROCESSANDO VOZ", "Transcrevendo sua fala...");
 
-            string transcript = "";
+            FridaTranscriptionResult result;
             try
             {
-                // Quando havia outra voz junto (TV, pessoa ao lado), so a sua voz vai para a transcricao.
-                transcript = await CallGeminiTranscribeAsync(ownVoiceOnly ?? wavBytes);
+                result = await TranscribeAudioAsync(ownVoiceOnly ?? wavBytes, "command");
             }
-            catch
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex)
             {
-                transcript = "";
+                BootLogger.Log("STT comando: " + ex.GetType().Name);
+                result = FridaTranscriptionResult.Create(FridaTranscriptionStatus.ServiceError, "unexpected_error");
             }
 
             if(!_running || _paused || IsEnrollingVoice || inputEpoch!=Volatile.Read(ref _inputEpoch))return;
-            transcript = (transcript ?? "").Trim();
-
-            if (string.IsNullOrEmpty(transcript))
+            if (!result.IsOk)
             {
-                if (stripWakePrefix)
+                if (result.Status != FridaTranscriptionStatus.Cancelled && !_offRequested)
                 {
-                    if (OnUserTranscriptReady != null) OnUserTranscriptReady("__WAKE_ONLY__", true);
-                }
-                else
-                {
-                    if(!_offRequested)WaitForExplicitRequest();
+                    EnterFollowUpConversationWindow();
+                    if (_orb != null) _orb.SetActivityState(OrbActivityState.Listening, "FRIDA · REPITA", result.UserMessage);
                 }
                 return;
             }
 
-            string cleaned = StripLeadingWakeWord(transcript);
+            string cleaned = StripLeadingWakeWord(result.Text);
             if (string.IsNullOrEmpty(cleaned))
             {
                 if (OnUserTranscriptReady != null) OnUserTranscriptReady("__WAKE_ONLY__", true);
@@ -1244,152 +1407,59 @@ namespace FridaAgent
             finally {lock(_inputSync)if(object.ReferenceEquals(_inputCancellation,input))_inputCancellation=null;}
         }
 
-        private static string FilterWhisperSilenceHallucination(string raw)
+        private async Task<FridaTranscriptionResult> TranscribeAudioAsync(byte[] wavBytes, string source)
         {
-            if (string.IsNullOrEmpty(raw)) return "";
-            string t = raw.Trim();
-            if (t.Length <= 1) return "";
-            if (Regex.IsMatch(t, @"^(legendas|subtitles|amara\.org|obrigad[oa] por assistir|inscreva-se|deixe seu like|thank you for watching|you|♪+|\[.*\]|\(.*\)|\.+)$", RegexOptions.IgnoreCase))
-            {
-                return "";
-            }
-            // Corrige alucinacao acustica comum do Whisper em pt-BR (Ailton ouvido como Hilton)
-            t = Regex.Replace(t, @"\bHilton\b", "Ailton", RegexOptions.IgnoreCase);
-            return t;
-        }
-
-        private async Task<string> CallOpenAiWhisperMultipartAsync(string endpointUrl, string bearerKey, string modelId, string bucketTag, byte[] wavBytes)
-        {
-            FridaWorkContext.ThrowIfCancelled();
-            if (string.IsNullOrEmpty(bearerKey) || !ModelQuotaGuard.IsAvailable(bucketTag, modelId)) return null;
-
             FridaTeamState.BeginWork(TeamRole.Hearing, "Transcrevendo audio", false);
-            ModelQuotaGuard.SetActiveModel(bucketTag, modelId);
-            bool isGroq = endpointUrl.IndexOf("groq.com", StringComparison.OrdinalIgnoreCase) >= 0;
-            System.Diagnostics.Stopwatch swStt = System.Diagnostics.Stopwatch.StartNew();
-
+            FridaTranscriptionResult result;
             try
             {
-                using (MultipartFormDataContent form = new MultipartFormDataContent())
+                result = await new FridaSpeechRecognizer(_http, _settings).TranscribeAsync(wavBytes, FridaWorkContext.Token);
+                // A quality retry never becomes a third request to an unrelated model.
+                bool serviceFailure = result.Reason == "provider_unavailable" || result.Reason == "timeout"
+                    || result.Reason == "transport_or_response_error" || result.Reason.StartsWith("http_", StringComparison.Ordinal);
+                if (result.Status == FridaTranscriptionStatus.ServiceError && serviceFailure && result.Attempts < 2
+                    && _settings.stt_gemini_fallback_enabled && !string.IsNullOrWhiteSpace(_settings.api_key))
                 {
-                    ByteArrayContent audioContent = new ByteArrayContent(wavBytes);
-                    audioContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/wav");
-                    form.Add(audioContent, "file", "speech.wav");
-                    form.Add(new StringContent(modelId), "model");
-                    form.Add(new StringContent("pt"), "language");
-                    form.Add(new StringContent(isGroq ? "verbose_json" : "json"), "response_format");
-                    if (isGroq)
+                    var watch = System.Diagnostics.Stopwatch.StartNew();
+                    var attempt = new FridaTranscriptionAttempt { Model = ModelSelection.GeminiLite };
+                    try
                     {
-                        form.Add(new StringContent("0"), "temperature");
-                        // NOTE: Never pass a multi-word 'prompt' here — Whisper echoes prompt words on breath/silence!
-                    }
-
-                    using (HttpRequestMessage req = new HttpRequestMessage(HttpMethod.Post, endpointUrl))
-                    {
-                        req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + bearerKey);
-                        req.Content = form;
-                        using (HttpResponseMessage resp = await _http.SendAsync(req,FridaWorkContext.Token))
+                        using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(FridaWorkContext.Token))
                         {
-                            string body = await resp.Content.ReadAsStringAsync();
-                            if (!resp.IsSuccessStatusCode)
+                            timeout.CancelAfter(TimeSpan.FromSeconds(FridaVoiceOptions.TimeoutSeconds(_settings)));
+                            using (FridaWorkContext.Enter(timeout.Token))
                             {
-                                ModelQuotaGuard.RecordHttpResponse(bucketTag, modelId, swStt.ElapsedMilliseconds, resp, body);
-                                BootLogger.Log("STT [" + modelId + "] HTTP " + (int)resp.StatusCode + ": " + (body != null && body.Length > 180 ? body.Substring(0, 180) : body));
-                                return null;
+                                string text = await CallGeminiBackupTranscribeAsync(wavBytes);
+                                result.Status = text == null ? FridaTranscriptionStatus.ServiceError
+                                    : string.IsNullOrWhiteSpace(text) ? FridaTranscriptionStatus.LowQuality : FridaTranscriptionStatus.Ok;
+                                result.Text = text ?? "";
+                                result.Reason = text == null ? "backup_unavailable" : result.IsOk ? "backup_transcript" : "backup_empty_after_speech";
                             }
-
-                            Dictionary<string, object> parsed = _json.Deserialize<Dictionary<string, object>>(body);
-                            if (parsed == null) return "";
-
-                            // Enforce Whisper acoustic confidence gating on verbose_json segments to block room-noise hallucinations
-                            if (isGroq && parsed.ContainsKey("segments") && parsed["segments"] is ArrayList)
-                            {
-                                ArrayList segs = (ArrayList)parsed["segments"];
-                                if (segs.Count == 0) return "";
-
-                                double sumNoSpeech = 0.0;
-                                double sumLogProb = 0.0;
-                                double maxComp = 0.0;
-                                int segCount = 0;
-
-                                for (int i = 0; i < segs.Count; i++)
-                                {
-                                    Dictionary<string, object> sg = segs[i] as Dictionary<string, object>;
-                                    if (sg == null) continue;
-                                    segCount++;
-                                    if (sg.ContainsKey("no_speech_prob") && sg["no_speech_prob"] != null)
-                                        sumNoSpeech += Convert.ToDouble(sg["no_speech_prob"], System.Globalization.CultureInfo.InvariantCulture);
-                                    if (sg.ContainsKey("avg_logprob") && sg["avg_logprob"] != null)
-                                        sumLogProb += Convert.ToDouble(sg["avg_logprob"], System.Globalization.CultureInfo.InvariantCulture);
-                                    if (sg.ContainsKey("compression_ratio") && sg["compression_ratio"] != null)
-                                    {
-                                        double cr = Convert.ToDouble(sg["compression_ratio"], System.Globalization.CultureInfo.InvariantCulture);
-                                        if (cr > maxComp) maxComp = cr;
-                                    }
-                                }
-
-                                if (segCount > 0)
-                                {
-                                    double avgNoSpeech = sumNoSpeech / segCount;
-                                    double avgLogProb = sumLogProb / segCount;
-                                    if (avgNoSpeech >= 0.62 || avgLogProb <= -1.10 || maxComp >= 2.40)
-                                    {
-                                        return "";
-                                    }
-                                }
-                            }
-
-                            if (parsed.ContainsKey("text") && parsed["text"] != null)
-                            {
-                                swStt.Stop();
-                                ModelQuotaGuard.RecordHttpResponse(bucketTag, modelId, swStt.ElapsedMilliseconds, resp, body);
-                                return FilterWhisperSilenceHallucination(parsed["text"].ToString());
-                            }
-                            return "";
                         }
                     }
+                    catch (OperationCanceledException)
+                    {
+                        result.Status = FridaWorkContext.Token.IsCancellationRequested ? FridaTranscriptionStatus.Cancelled : FridaTranscriptionStatus.ServiceError;
+                        result.Text = ""; result.Reason = result.Status == FridaTranscriptionStatus.Cancelled ? "cancelled" : "backup_timeout";
+                    }
+                    result.Model = attempt.Model; attempt.Milliseconds = watch.Elapsed.TotalMilliseconds;
+                    result.ElapsedMilliseconds += attempt.Milliseconds; attempt.Status = result.Status.ToString(); attempt.Reason = result.Reason;
+                    result.History.Add(attempt); result.Attempts = result.History.Count;
                 }
+                if (FridaWorkContext.Token.IsCancellationRequested)
+                { result.Status = FridaTranscriptionStatus.Cancelled; result.Text = ""; result.Reason = "cancelled"; }
+                FridaVoiceMetrics.Record(_settings, result, source, (int)_selectedMicId);
+                return result;
             }
-            catch (Exception ex)
-            {
-                FridaWorkContext.ThrowIfCancelled();
-                BootLogger.Log("STT [" + modelId + "] Excecao: " + ex.Message);
-                if (IsNetworkOutageException(ex))
-                {
-                    _networkOutageBackoffUntilUtc = DateTime.UtcNow.AddSeconds(12);
-                }
-                return null;
-            }
-            finally
-            {
-                ModelQuotaGuard.ClearActiveModel(bucketTag, modelId);
-                FridaTeamState.EndWork(TeamRole.Hearing);
-            }
+            finally { FridaTeamState.EndWork(TeamRole.Hearing); }
         }
 
-        private async Task<string> CallGeminiTranscribeAsync(byte[] wavBytes)
+        private async Task<string> CallGeminiBackupTranscribeAsync(byte[] wavBytes)
         {
             FridaWorkContext.ThrowIfCancelled();
-            if (DateTime.UtcNow < _networkOutageBackoffUntilUtc)
-            {
-                return "";
-            }
-            // Transcricao principal: Whisper Turbo na Groq.
-            string groqKey = (_settings.groq_api_key ?? "").Trim();
-            if (!string.IsNullOrEmpty(groqKey))
-            {
-                string groqTxt = await CallOpenAiWhisperMultipartAsync(
-                    "https://api.groq.com/openai/v1/audio/transcriptions",
-                    groqKey,
-                    ModelSelection.Transcription,
-                    "stt_groq",
-                    wavBytes);
-                if (groqTxt != null) return groqTxt;
-            }
-
             // Reserva: reutiliza o Gemini Lite ja selecionado.
             string apiKey = (_settings.api_key ?? "").Trim();
-            if (string.IsNullOrEmpty(apiKey)) return "";
+            if (string.IsNullOrEmpty(apiKey)) return null;
 
             string[] rawCandidates = new string[] { ModelSelection.GeminiLite };
 
@@ -1443,7 +1513,7 @@ namespace FridaAgent
                             if (!resp.IsSuccessStatusCode)
                             {
                                 ModelQuotaGuard.RecordHttpResponse("stt", modelName, 0, resp, body);
-                                BootLogger.Log("STT [" + modelName + "] HTTP " + (int)resp.StatusCode + ": " + (body != null && body.Length > 180 ? body.Substring(0, 180) : body));
+                                BootLogger.Log("STT [" + modelName + "] HTTP " + (int)resp.StatusCode);
                                 continue;
                             }
 
@@ -1475,13 +1545,14 @@ namespace FridaAgent
                                     }
                                 }
                             }
-                            return "";
+                            return null;
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    BootLogger.Log("STT [" + modelName + "] Excecao: " + ex.Message);
+                    FridaWorkContext.ThrowIfCancelled();
+                    BootLogger.Log("STT [" + modelName + "] Excecao: " + ex.GetType().Name);
                     if (IsNetworkOutageException(ex))
                     {
                         _networkOutageBackoffUntilUtc = DateTime.UtcNow.AddSeconds(12);
@@ -1490,7 +1561,7 @@ namespace FridaAgent
                 }
             }
 
-            return "";
+            return null;
         }
 
         public async Task<byte[]> PreSynthesizeVoiceWavAsync(string rawText)
@@ -1575,6 +1646,8 @@ namespace FridaAgent
                 scope=FridaWorkContext.Enter(cancellation.Token);
                 FridaTeamState.BeginWork(TeamRole.Voice,"Falando como Frida",false);
                 lock(_recLock){_preRollQueue.Clear();_consecutiveVoiceFrames=0;_capturingActiveCommand=false;if(_activeCapturePcm!=null){_activeCapturePcm.Dispose();_activeCapturePcm=null;}}
+                lock(_controlAudioSync)_controlPreRoll.Clear();
+                if(_localWake!=null){_localWake.IsSpeakingPlayback=true;_localWake.Reset();}
                 if(_orb!=null)_orb.SetActivityState(OrbActivityState.Speaking,"FRIDA",subtitle ?? text ?? "");
                 if(prepared!=null){cancellation.Token.ThrowIfCancellationRequested();await Task.Run(()=>PlayWavSynchronizedWithHologram(prepared));cancellation.Token.ThrowIfCancellationRequested();result.CompletedChunks++;}
                 else
@@ -1615,11 +1688,14 @@ namespace FridaAgent
                     if(object.ReferenceEquals(_speechCancellation,cancellation))
                     {_speechCancellation=null;_isSpeaking=false;_activePlayer=null;_playbackReference=null;}
                 }
+                if(_localWake!=null)_localWake.IsSpeakingPlayback=_isSpeaking;
                 if(cancellation!=null)cancellation.Dispose();
                 if(admitted==Volatile.Read(ref _speechEpoch))
                 {
                     _ignoreMicUntilUtc=DateTime.UtcNow.AddMilliseconds(350);
                     lock(_recLock){_preRollQueue.Clear();_consecutiveVoiceFrames=0;}
+                    lock(_controlAudioSync)_controlPreRoll.Clear();
+                    if(_localWake!=null)_localWake.Reset();
                     if(!_offRequested && result.Status!="failed")WaitForConversationContinuation();
                 }
                 _technicalDelivery=true;FridaTeamState.EndWork(TeamRole.Voice);_speechGate.Release();
@@ -1794,8 +1870,18 @@ namespace FridaAgent
                         proc.StandardInput.BaseStream.Flush();
                         proc.StandardInput.Close();
 
-                        proc.WaitForExit(6000);
-                        readerTask.Wait(2000);
+                        bool exited = proc.WaitForExit(6000);
+                        if (!exited)
+                        {
+                            FridaVerifiedTools.KillOwnedProcessTree(proc);
+                            readerTask.Wait(1000);
+                            return null;
+                        }
+                        if (!readerTask.Wait(2000))
+                        {
+                            FridaVerifiedTools.KillOwnedProcessTree(proc);
+                            return null;
+                        }
                         if (rawPcmOut != null && rawPcmOut.Length > 400)
                         {
                             int evenLen = rawPcmOut.Length & ~1;
@@ -1867,13 +1953,16 @@ namespace FridaAgent
             ModelQuotaGuard.SetActiveModel("tts_edge", ModelSelection.EdgeSpeech);
             System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
             byte[] wav = null;
+            bool cancelled = false;
             try { wav = await SynthesizeEdgeTtsNeuralCoreAsync(textToSpeak); }
+            catch (OperationCanceledException) { cancelled = true; throw; }
             finally
             {
                 sw.Stop();
+                if (_cancelSpeechRequested || FridaWorkContext.Token.IsCancellationRequested) cancelled = true;
                 if (wav != null && wav.Length > 100)
                     ModelQuotaGuard.RecordRequestSuccess("tts_edge", ModelSelection.EdgeSpeech, sw.ElapsedMilliseconds, 0, 0, (textToSpeak ?? "").Length + " caracteres");
-                else
+                else if (!cancelled)
                     ModelQuotaGuard.RecordException("tts_edge", ModelSelection.EdgeSpeech, "Edge-TTS nao gerou audio");
                 ModelQuotaGuard.ClearActiveModel("tts_edge", ModelSelection.EdgeSpeech);
             }
@@ -1885,6 +1974,7 @@ namespace FridaAgent
             string edgeExe = FindEdgeTtsExecutable();
             string ffmpeg = FindFfmpegExecutable();
             if (string.IsNullOrEmpty(edgeExe) || string.IsNullOrEmpty(ffmpeg)) return null;
+            if (_cancelSpeechRequested || FridaWorkContext.Token.IsCancellationRequested) throw new OperationCanceledException();
 
             string tempDir = Path.GetTempPath();
             string tempTxt = Path.Combine(tempDir, "frida_tts_" + Guid.NewGuid().ToString("N") + ".txt");
@@ -1908,6 +1998,11 @@ namespace FridaAgent
                     // Medido em 03/11: 834 caracteres = 10,9 s. Prazo: 10 s + 1,5 s a cada 100 caracteres, ate 90 s.
                     int edgeTimeoutMs = Math.Min(90000, 10000 + (textToSpeak ?? "").Length * 15);
                     bool exited = await Task.Run(delegate { return procEdge.WaitForExit(edgeTimeoutMs); });
+                    if (_cancelSpeechRequested || FridaWorkContext.Token.IsCancellationRequested)
+                    {
+                        FridaVerifiedTools.KillOwnedProcessTree(procEdge);
+                        throw new OperationCanceledException();
+                    }
                     if (!exited)
                     {
                         BootLogger.Log("Edge-TTS excedeu " + edgeTimeoutMs + " ms para " + (textToSpeak ?? "").Length + " caracteres.");
@@ -1916,54 +2011,24 @@ namespace FridaAgent
                     }
                 }
 
+                if (_cancelSpeechRequested || FridaWorkContext.Token.IsCancellationRequested) throw new OperationCanceledException();
                 if (!File.Exists(tempMp3)) return null;
                 byte[] mp3Bytes = File.ReadAllBytes(tempMp3);
                 if (mp3Bytes == null || mp3Bytes.Length < 128) return null;
 
                 // Converte MP3 para WAV PCM 24kHz 16-bit mono via ffmpeg pipe
-                ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName = ffmpeg;
-                psi.Arguments = "-loglevel quiet -i pipe:0 -f s16le -ar 24000 -ac 1 -acodec pcm_s16le pipe:1";
-                psi.CreateNoWindow = true;
-                psi.UseShellExecute = false;
-                psi.RedirectStandardInput = true;
-                psi.RedirectStandardOutput = true;
-
-                using (Process proc = Process.Start(psi))
-                using(FridaWorkContext.Token.Register(()=>FridaVerifiedTools.KillOwnedProcessTree(proc)))
-                {
-                    byte[] rawPcmOut = null;
-                    Task readerTask = Task.Run(delegate
-                    {
-                        using (MemoryStream msOut = new MemoryStream())
-                        {
-                            proc.StandardOutput.BaseStream.CopyTo(msOut);
-                            rawPcmOut = msOut.ToArray();
-                        }
-                    });
-
-                    proc.StandardInput.BaseStream.Write(mp3Bytes, 0, mp3Bytes.Length);
-                    proc.StandardInput.BaseStream.Flush();
-                    proc.StandardInput.Close();
-
-                    bool fExit = await Task.Run(delegate { return proc.WaitForExit(6000); });
-                    await readerTask;
-
-                    if (rawPcmOut != null && rawPcmOut.Length > 400)
-                    {
-                        int evenLen = rawPcmOut.Length & ~1;
-                        if (evenLen != rawPcmOut.Length)
-                        {
-                            byte[] trimmed = new byte[evenLen];
-                            Buffer.BlockCopy(rawPcmOut, 0, trimmed, 0, evenLen);
-                            rawPcmOut = trimmed;
-                        }
-                        return BuildWavFromPcm16Mono(rawPcmOut, 24000);
-                    }
-                }
+                byte[] converted = await ConvertMp3ToWavViaFfmpegAsync(
+                    ffmpeg,
+                    "-loglevel quiet -i pipe:0 -f s16le -ar 24000 -ac 1 -acodec pcm_s16le pipe:1",
+                    mp3Bytes,
+                    6000).ConfigureAwait(false);
+                if (_cancelSpeechRequested || FridaWorkContext.Token.IsCancellationRequested) throw new OperationCanceledException();
+                return converted;
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
+                if (_cancelSpeechRequested || FridaWorkContext.Token.IsCancellationRequested) throw new OperationCanceledException();
                 BootLogger.Log("Edge-TTS Excecao: " + ex.Message);
             }
             finally
@@ -1973,6 +2038,79 @@ namespace FridaAgent
             }
 
             return null;
+        }
+
+        internal static async Task<byte[]> ConvertMp3ToWavViaFfmpegAsync(
+            string ffmpegFileName,
+            string ffmpegArguments,
+            byte[] mp3Bytes,
+            int timeoutMs = 6000)
+        {
+            if (string.IsNullOrWhiteSpace(ffmpegFileName) || mp3Bytes == null || mp3Bytes.Length == 0)
+                return null;
+
+            ProcessStartInfo psi = new ProcessStartInfo();
+            psi.FileName = ffmpegFileName;
+            psi.Arguments = ffmpegArguments;
+            psi.CreateNoWindow = true;
+            psi.UseShellExecute = false;
+            psi.RedirectStandardInput = true;
+            psi.RedirectStandardOutput = true;
+
+            using (Process proc = Process.Start(psi))
+            using (FridaWorkContext.Token.Register(() => FridaVerifiedTools.KillOwnedProcessTree(proc)))
+            {
+                if (proc == null) return null;
+                byte[] rawPcmOut = null;
+                Task readerTask = Task.Run(delegate
+                {
+                    try
+                    {
+                        using (MemoryStream msOut = new MemoryStream())
+                        {
+                            proc.StandardOutput.BaseStream.CopyTo(msOut);
+                            rawPcmOut = msOut.ToArray();
+                        }
+                    }
+                    catch { }
+                });
+
+                try
+                {
+                    proc.StandardInput.BaseStream.Write(mp3Bytes, 0, mp3Bytes.Length);
+                    proc.StandardInput.BaseStream.Flush();
+                    proc.StandardInput.Close();
+                }
+                catch { }
+
+                bool fExit = await Task.Run(delegate { return proc.WaitForExit(Math.Max(200, timeoutMs)); }).ConfigureAwait(false);
+                if (!fExit)
+                {
+                    FridaVerifiedTools.KillOwnedProcessTree(proc);
+                    await Task.WhenAny(readerTask, Task.Delay(1000)).ConfigureAwait(false);
+                    return null;
+                }
+
+                Task completedReader = await Task.WhenAny(readerTask, Task.Delay(2000)).ConfigureAwait(false);
+                if (completedReader != readerTask)
+                {
+                    FridaVerifiedTools.KillOwnedProcessTree(proc);
+                    return null;
+                }
+
+                if (rawPcmOut != null && rawPcmOut.Length > 400)
+                {
+                    int evenLen = rawPcmOut.Length & ~1;
+                    if (evenLen != rawPcmOut.Length)
+                    {
+                        byte[] trimmed = new byte[evenLen];
+                        Buffer.BlockCopy(rawPcmOut, 0, trimmed, 0, evenLen);
+                        rawPcmOut = trimmed;
+                    }
+                    return BuildWavFromPcm16Mono(rawPcmOut, 24000);
+                }
+                return null;
+            }
         }
 
         private static bool IsValidPlayableRiffWav(byte[] wav)
@@ -2643,7 +2781,7 @@ namespace FridaAgent
             });
         }
 
-        private static byte[] BuildWavFromPcm16Mono(byte[] pcmData, int sampleRate)
+        internal static byte[] BuildWavFromPcm16Mono(byte[] pcmData, int sampleRate)
         {
             using (MemoryStream ms = new MemoryStream(44 + pcmData.Length))
             using (BinaryWriter bw = new BinaryWriter(ms))

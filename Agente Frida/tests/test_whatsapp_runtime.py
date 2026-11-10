@@ -34,6 +34,87 @@ class RuntimeTests(unittest.TestCase):
         for p in reversed(self.patches):p.stop()
         self.temp.cleanup()
 
+    def test_daily_group_read_returns_dated_verified_messages_and_partial_scope(self):
+        session = runtime.ReaderSession()
+        session.driver = MagicMock()
+        session.driver.execute_script.return_value = [{"name": "Equipe", "is_group": True}]
+        ui = MagicMock()
+        ui.open_chat.return_value = {"chat": "Equipe", "chat_type": "group"}
+        ui.messages.return_value = [record(), dict(record(message="old"), timestamp="2026-11-02T15:00:00-03:00")]
+        with patch.object(session, "connect"), patch.object(runtime, "WebUI", return_value=ui), patch.object(reader, "select_groups_filter"):
+            result = session.execute(dict(operation="read_recent_groups", chat_type="group",
+                date_from="2026-11-03T00:00:00-03:00", date_to="2026-11-04T00:00:00-03:00"))
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["coverage"]["groups_read"], 1)
+        self.assertEqual(result["coverage"]["date_from"], "2026-11-03T00:00:00-03:00")
+        self.assertEqual([m["message_id"] for m in result["messages"]], ["m1"])
+        ui.scroll.assert_not_called()
+
+    def test_group_overview_scrolls_back_until_the_requested_day(self):
+        def message(mid, stamp):
+            return dict(record(message=mid), timestamp=stamp)
+        today = [message("t%d" % i, "2026-11-04T1%d:00:00-03:00" % i) for i in range(3)]
+        yesterday = [message("y1", "2026-11-03T16:00:00-03:00"), message("y2", "2026-11-03T09:00:00-03:00")]
+        older = [message("o1", "2026-11-02T18:00:00-03:00")]
+        session = runtime.ReaderSession()
+        session.driver = MagicMock()
+        session.driver.execute_script.return_value = [{"name": "Equipe", "is_group": True}]
+        ui = MagicMock()
+        ui.open_chat.return_value = {"chat": "Equipe", "chat_type": "group"}
+        ui.messages.side_effect = [today, yesterday + today, older + yesterday + today]
+        ui.scroll.return_value = {"moved": True, "boundary": False}
+        with patch.object(session, "connect"), patch.object(runtime, "WebUI", return_value=ui), patch.object(reader, "select_groups_filter"):
+            result = session.execute(dict(operation="read_recent_groups", chat_type="group",
+                date_from="2026-11-03T00:00:00-03:00", date_to="2026-11-04T00:00:00-03:00"))
+        self.assertEqual([m["message_id"] for m in result["messages"]], ["y1", "y2"])
+        self.assertEqual(ui.scroll.call_count, 2)
+        ui.scroll.assert_called_with("#main", -1)
+
+    def test_group_overview_stops_scrolling_at_history_start(self):
+        session = runtime.ReaderSession()
+        session.driver = MagicMock()
+        session.driver.execute_script.return_value = [{"name": "Equipe", "is_group": True}]
+        ui = MagicMock()
+        ui.open_chat.return_value = {"chat": "Equipe", "chat_type": "group"}
+        ui.messages.return_value = [dict(record(), timestamp="2026-11-04T10:00:00-03:00")]
+        ui.scroll.return_value = {"moved": False, "boundary": True}
+        with patch.object(session, "connect"), patch.object(runtime, "WebUI", return_value=ui), patch.object(reader, "select_groups_filter"):
+            result = session.execute(dict(operation="read_recent_groups", chat_type="group",
+                date_from="2026-11-03T00:00:00-03:00", date_to="2026-11-04T00:00:00-03:00"))
+        self.assertEqual(result["messages"], [])
+        self.assertEqual(ui.scroll.call_count, 3)
+
+    def test_group_overview_respects_the_per_group_time_budget(self):
+        session = runtime.ReaderSession()
+        session.driver = MagicMock()
+        session.driver.execute_script.return_value = [{"name": "Equipe", "is_group": True}]
+        ui = MagicMock()
+        ui.open_chat.return_value = {"chat": "Equipe", "chat_type": "group"}
+        ui.messages.return_value = [dict(record(), timestamp="2026-11-04T10:00:00-03:00")]
+        ui.scroll.return_value = {"moved": True, "boundary": False}
+        with patch.object(session, "connect"), patch.object(runtime, "WebUI", return_value=ui), \
+                patch.object(reader, "select_groups_filter"), patch.object(runtime, "RECENT_GROUP_SECONDS", 1.5):
+            result = session.execute(dict(operation="read_recent_groups", chat_type="group",
+                date_from="2026-11-03T00:00:00-03:00", date_to="2026-11-04T00:00:00-03:00"))
+        self.assertEqual(result["coverage"]["groups_read"], 1)
+        self.assertLessEqual(ui.scroll.call_count, 4)
+
+    def test_custom_lists_use_known_group_names_but_read_live_messages(self):
+        runtime.save_records([record(message="cached")])
+        session = runtime.ReaderSession()
+        session.driver = MagicMock()
+        session.driver.execute_script.return_value = [{"name":"Contato"}, {"name":"Equipe"}]
+        ui = MagicMock()
+        ui.open_chat.return_value = {"chat":"Equipe", "chat_type":"group"}
+        ui.messages.return_value = [record(message="live")]
+        ui.scroll.return_value = {"moved": False, "boundary": True}
+        with patch.object(session, "connect"), patch.object(runtime, "WebUI", return_value=ui), patch.object(reader, "select_groups_filter", side_effect=reader.ReaderFailure("dom_changed","sem filtro")):
+            result = session.execute(dict(operation="read_recent_groups", chat_type="group",
+                date_from="2026-11-03T00:00:00-03:00", date_to="2026-11-04T00:00:00-03:00"))
+        ui.open_chat.assert_called_once_with("Equipe", kind="group")
+        self.assertEqual([m["message_id"] for m in result["messages"]], ["live"])
+        self.assertIn("visible_known_groups", result["coverage"]["issues"])
+
     def test_migration_preserves_legacy_and_is_idempotent(self):
         reader.save_messages_to_cache('Equipe',[{'text':'3213'}])
         with reader.cache_connection() as c:c.execute('PRAGMA user_version=0')
@@ -106,6 +187,58 @@ class RuntimeTests(unittest.TestCase):
             session.close()
             start.assert_called_once();driver.quit.assert_called_once()
         with reader.ProfileLock(self.profile):pass
+
+    def test_embedded_pairing_renews_qr_and_confirms_same_profile(self):
+        events = []
+        driver = MagicMock()
+        frames = iter(['QR_TEST_A', 'QR_TEST_A', 'QR_TEST_B'])
+        class Qr:
+            @property
+            def screenshot_as_base64(self):
+                return next(frames)
+        checks = 0
+        def elements(kind, selector):
+            nonlocal checks
+            if selector == 'pane-side':
+                checks += 1
+                return [object()] if checks >= 4 else []
+            return [Qr()]
+        driver.find_elements.side_effect = elements
+        with patch.object(reader, 'get_driver', return_value=driver) as start, patch.object(reader, 'check_login_status', return_value='NEEDS_QR'), patch.object(runtime.time, 'sleep'):
+            session = runtime.ReaderSession(emit=events.append)
+            result = session.execute({'operation': 'pair', 'embedded': True, 'request_id': 'pair-test'})
+            session.close()
+        self.assertTrue(result['authenticated'])
+        start.assert_called_once_with(headless=True)
+        qr_events = [event for event in events if event['event'] == 'qr']
+        self.assertEqual([event['png_base64'] for event in qr_events], ['QR_TEST_A', 'QR_TEST_B'])
+        self.assertTrue(all(event['request_id'] == 'pair-test' for event in qr_events))
+        for file in Path(self.temp.name).rglob('*'):
+            if file.is_file():
+                self.assertNotIn(b'QR_TEST_', file.read_bytes())
+
+    def test_embedded_pairing_cancel_returns_cancelled_and_releases_profile(self):
+        cancel = threading.Event()
+        driver = MagicMock()
+        driver.find_elements.side_effect = lambda kind, selector: [] if selector == 'pane-side' else [MagicMock(screenshot_as_base64='QR_CANCEL_TEST')]
+        def emit(event):
+            if event['event'] == 'qr':
+                cancel.set()
+        with patch.object(reader, 'get_driver', return_value=driver), patch.object(reader, 'check_login_status', return_value='NEEDS_QR'), patch.object(runtime.time, 'sleep'):
+            session = runtime.ReaderSession(emit=emit, cancel=cancel)
+            result = session.execute({'operation': 'pair', 'embedded': True})
+            session.close()
+        self.assertEqual(result['status'], 'user_cancelled')
+        with reader.ProfileLock(self.profile):
+            pass
+
+    def test_embedded_pairing_expiry_is_not_connected(self):
+        with patch.object(reader, 'get_driver', return_value=MagicMock()), patch.object(reader, 'check_login_status', return_value='NEEDS_QR'), patch.object(runtime, 'PAIR_SECONDS', 0):
+            session = runtime.ReaderSession()
+            result = session.execute({'operation': 'pair', 'embedded': True})
+            session.close()
+        self.assertEqual(result['status'], 'timeout')
+        self.assertFalse(result.get('authenticated', False))
 
     def test_auth_failure_is_not_empty_success(self):
         with patch.object(reader,'get_driver',return_value=MagicMock()),patch.object(reader,'check_login_status',return_value='NEEDS_QR'):
@@ -322,6 +455,59 @@ class RuntimeTests(unittest.TestCase):
         rows=[json.loads(x) for x in result.stdout.splitlines()]
         terminal=[x for x in rows if x['event']=='result']
         self.assertEqual([x['request_id'] for x in terminal],['0','1']);self.assertTrue(all(x['result']['status']=='cached' for x in terminal))
+
+    def test_query_chat_rows_succeeds_without_headings_when_chat_rows_match(self):
+        driver=MagicMock()
+        box=MagicMock()
+        driver.execute_script.return_value={
+            'headings':[],
+            'rows':[{'name':'Qualidade Corte e Dobra - DONO SUEIDE VICE AILTON','preview':'17:02','section':'','self':False,'element':MagicMock()}]
+        }
+        ui=WebUI(driver,runtime.ReaderFailure,lambda:None,lambda *a:None)
+        with patch.object(WebUI,'visible',return_value=[box]),patch.object(WebUI,'search_active',return_value=True),patch.object(WebUI,'_clear_box'),patch.object(WebUI,'empty_state',return_value=False),patch.object(WebUI,'reset_search'):
+            matches=ui._query_chat_rows('qualidade corte e dobra')
+        self.assertEqual(len(matches),1)
+        self.assertEqual(matches[0]['name'],'Qualidade Corte e Dobra - DONO SUEIDE VICE AILTON')
+
+    def test_find_chats_token_overlap_resolves_laser_to_corte_e_dobra(self):
+        driver=MagicMock()
+        ui=WebUI(driver,runtime.ReaderFailure,lambda:None,lambda *a:None)
+        row={'name':'Qualidade Corte e Dobra - DONO SUEIDE VICE AILTON','preview':'17:02','section':'conversas','self':False,'element':MagicMock()}
+        def fake_query(q):
+            return [dict(row)] if q=='qualidade corte' else []
+        with patch.object(WebUI,'_query_chat_rows',side_effect=fake_query):
+            matches=ui.find_chats('qualidade corte a laser')
+        self.assertEqual(len(matches),1)
+        self.assertEqual(matches[0]['name'],'Qualidade Corte e Dobra - DONO SUEIDE VICE AILTON')
+
+    def test_query_cache_resolves_partial_group_name_and_empty_query_search_cache(self):
+        item=record('999@g.us','m99','Entregues 45 pecas hoje')
+        item['chat']='Qualidade Corte e Dobra - DONO SUEIDE VICE AILTON'
+        runtime.save_records([item])
+        req=runtime.validate_request({'operation':'search_cache','chat_name':'qualidade corte e dobra','query':'','limit':20})
+        cached=runtime.query_cache(req)
+        self.assertEqual(len(cached),1)
+        self.assertEqual(cached[0]['message_id'],'m99')
+
+    def test_read_group_merges_verified_cache_records_from_same_day(self):
+        early=record('ui:qcd','m_early','Dobradeira\nItem: ref do trilo do assoalho\nQuantidade: 86 peças')
+        early['chat']='Qualidade Corte e Dobra - DONO SUEIDE VICE AILTON'
+        early['chat_type']='group'
+        early['timestamp']='2026-11-04T16:52:00-03:00'
+        runtime.save_records([early])
+        late=record('ui:qcd','m_late','Dobradeira\nItem: D.I\nQuantidade: 19 peças')
+        late['chat']='Qualidade Corte e Dobra - DONO SUEIDE VICE AILTON'
+        late['chat_type']='group'
+        late['timestamp']='2026-11-04T17:32:00-03:00'
+        driver=MagicMock();ui=MagicMock()
+        ui.open_chat.return_value={'chat_id':'ui:qcd','chat':'Qualidade Corte e Dobra - DONO SUEIDE VICE AILTON','chat_type':'group','source_verified':True}
+        ui.messages.return_value=[late]
+        ui.scroll.return_value={'moved':False,'boundary':True}
+        session=runtime.ReaderSession();session.driver=driver
+        req=runtime.validate_request({'operation':'read_group','chat_name':'qualidade corte e dobra','date_from':'2026-11-04T00:00:00-03:00','date_to':'2026-11-05T00:00:00-03:00','limit':50})
+        with patch.object(runtime,'WebUI',return_value=ui),patch.object(runtime.time,'sleep'):
+            res=session.collect(req)
+        self.assertEqual({m['message_id'] for m in res['messages']},{'m_early','m_late'})
 
 
 if __name__=='__main__':unittest.main()

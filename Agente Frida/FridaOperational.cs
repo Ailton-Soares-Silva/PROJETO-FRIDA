@@ -12,8 +12,17 @@ namespace FridaAgent
     internal sealed class FridaProviderBudget
     {
         private readonly HashSet<string> _providers=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _failedProviders=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         public bool TryEnter(string provider){if(_providers.Contains(provider))return true;if(_providers.Count>=2)return false;_providers.Add(provider);return true;}
-        public void Clear(){_providers.Clear();}
+        public void ReleaseFailedAttempt(string provider)
+        {
+            if(string.IsNullOrWhiteSpace(provider))return;
+            _failedProviders.Add(provider);
+            _providers.Remove(provider);
+        }
+        public IList<string> ActiveProviders { get { return _providers.ToList().AsReadOnly(); } }
+        public IList<string> FailedProviders { get { return _failedProviders.ToList().AsReadOnly(); } }
+        public void Clear(){_providers.Clear();_failedProviders.Clear();}
     }
     public sealed class FridaExpectedOperation
     {
@@ -21,24 +30,28 @@ namespace FridaAgent
         public bool Matches(FridaToolReceipt r)
         {
             if(Kind=="research")return r.Tool=="web_research";
+            if(Kind=="screen")return r.Tool=="inspect_screen";
             if(r.Status==FridaResultStatus.ModelAnalysis)return false;
             if(!string.IsNullOrEmpty(ExplicitTarget) && !string.Equals(ExplicitTarget.TrimEnd('\\'),(r.Target ?? "").TrimEnd('\\'),StringComparison.OrdinalIgnoreCase))return false;
-            if(!string.IsNullOrEmpty(Operation) && r.Operation!=Operation && !(Operation=="write" && r.Operation=="append"))return false;
+            if(!string.IsNullOrEmpty(Operation) && r.Operation!=Operation && !(Operation=="write" && (r.Operation=="append" || r.Operation=="patch")))return false;
             if(Kind=="whatsapp")return r.Tool=="read_whatsapp";
             if(Kind=="open")return r.Tool=="open_program_or_url" || r.Tool=="native_terminal";
             if(Kind=="power")return r.Tool=="native_power";
-            if(Kind=="read")return !r.IsAction && (r.Tool=="manage_files" || r.Tool=="verify_artifact");
-            if(Kind=="review")return !r.IsAction && (r.Tool=="manage_files" || r.Tool=="verify_artifact");
-            if(Kind=="write")return r.IsAction && r.Tool=="manage_files";
-            if(Kind=="research")return r.Tool=="web_research";
-            if(Kind=="inspect")return r.Tool=="run_powershell";
-            return r.Tool=="run_powershell" || r.Tool=="secretary_memory";
+            if(Kind=="read")return !r.IsAction && (r.Tool=="manage_files" || r.Tool=="verify_artifact" || r.Tool=="read_code" || r.Tool=="search_symbols" || r.Tool=="inspect_project");
+            if(Kind=="review")return !r.IsAction && (r.Tool=="manage_files" || r.Tool=="verify_artifact" || r.Tool=="read_code" || r.Tool=="search_symbols" || r.Tool=="inspect_project");
+            if(Kind=="write")return r.IsAction && (r.Tool=="manage_files" || r.Tool=="apply_patch");
+            if(Kind=="compile")return (r.Tool=="run_project_validation" && (r.Operation=="compile" || r.Operation=="build" || r.Scope=="build_passed" || r.Scope=="tests_passed_with_compile" || r.Scope=="build_failed"))
+                || (r.Tool=="run_powershell" && (r.Scope=="build_passed" || r.Scope=="tests_passed_with_compile" || FridaCodingTools.IsCompilationCommand(r.Target)));
+            if(Kind=="test")return (r.Tool=="run_project_validation" && (r.Operation=="test" || r.Operation=="tests" || r.Scope=="tests_passed" || r.Scope=="tests_passed_with_compile" || r.Scope=="tests_failed"))
+                || (r.Tool=="run_powershell" && (r.Scope=="tests_passed" || r.Scope=="tests_passed_with_compile" || FridaCodingTools.IsTestExecutionCommand(r.Target)));
+            if(Kind=="inspect")return r.Tool=="run_powershell" || r.Tool=="inspect_project";
+            return r.Tool=="run_powershell" || r.Tool=="run_project_validation" || r.Tool=="secretary_memory";
         }
     }
 
     public sealed class FridaRequestIntent
     {
-        public bool IsExplanation, RequiresTools, IsNegated;
+        public bool IsExplanation, RequiresTools, IsNegated, IsSoftwareDevelopment;
         public readonly List<FridaExpectedOperation> Operations=new List<FridaExpectedOperation>();
         public static FridaRequestIntent Classify(string request)
         {
@@ -48,34 +61,56 @@ namespace FridaAgent
             if(Regex.IsMatch(t,@"^(?:por favor )?nao (?:execute|abra|programe|agende|reinicie|desligue|crie|salve|apague|exclua|quero que|faca)\b"))
             {result.IsNegated=true;return result;}
             bool explanatory=Regex.IsMatch(t,@"^(?:por favor )?(?:(?:voce )?pode(?:ria)? )?(?:me )?(como|explique|explicar|o que|por que|mostre como|quero saber|gostaria de saber|descreva|detalhe)\b");
-            bool observation=Regex.IsMatch(t,@"^(o que tem|o que ha|o que contem|como esta)\b") && Regex.IsMatch(t,@"\b(pasta|arquivo|diretorio|whatsapp|cpu|memoria|processos)\b");
+            bool observation=Regex.IsMatch(t,@"^(o que tem|o que ha|o que contem|o que esta|como esta)\b") && Regex.IsMatch(t,@"\b(pasta|arquivo|diretorio|whatsapp|cpu|memoria|processos|tela|monitor)\b");
             if(observation)explanatory=false;
-            if(Regex.IsMatch(t,@"\b(piada|poema|poesia|conto|historia|rima)\b") && !Regex.IsMatch(t,@"\b(salve|grave|arquivo|documento|pasta)\b"))return result;
+            if(Regex.IsMatch(t,@"\b(piada|poema|poesia|conto|historia|rima|saudacao|mensagem formal|redacao criativa)\b") && !Regex.IsMatch(t,@"\b(salve|salvar|grave|gravar|arquivo|documento|pasta|\.[a-z0-9]+)\b"))return result;
             var parts=Regex.Split(t,@"\b(?:e|depois|em seguida)\s+(?=(?:tambem )?(?:abra|abre|leia|liste|consulte|crie|salve|execute|rode|programe|agende|desligue|reinicie|cancele|pesquise)\b)");
             var rawParts=Regex.Split(raw,@"\b(?:e|depois|em seguida)\s+(?=(?:tamb[eé]m )?(?:abra|abre|leia|liste|consulte|crie|salve|execute|rode|programe|agende|desligue|reinicie|cancele|pesquise)\b)",RegexOptions.IgnoreCase);
             result.IsExplanation=explanatory && parts.Length==1;
             if(result.IsExplanation)return result;
+
+            bool softwareDev = (Regex.IsMatch(t,@"\b(crie|criar|gere|gerar|construa|construir|desenvolva|desenvolver|implemente|implementar|programe|programar|codifique|refatore|refatorar|corrija|corrigir|conserte|consertar|depure|adicione|adicionar)\b")
+                    && (Regex.IsMatch(t,@"\b(aplicacao|aplicativo|app|programa|programacao|projeto|solucao|componente|servico|sistema|software|script|codigo|classe|funcao|metodo|api|microservico|cli|ferramenta|algoritmo|modulo|biblioteca|calculadora|conversor|validador|parser|automacao|desafio)\b")
+                        || Regex.IsMatch(raw,@"\.(cs|py|ps1|js|ts|java|cpp|c|go|rs|rb|php|sh|bat)\b",RegexOptions.IgnoreCase)))
+                || (Regex.IsMatch(t,@"\b(quero|preciso|necessito|gostaria)\b") && Regex.IsMatch(t,@"\b(um programa|uma aplicacao|um aplicativo|um sistema|um script|um site|um dashboard|uma ferramenta)\b"));
+
+            if(softwareDev)
+            {
+                result.IsSoftwareDevelopment=true;
+                var targetMatch=Regex.Match(raw,"\"([a-zA-Z]:[\\\\/][^\"]+)\"|([a-zA-Z]:[\\\\/][^\\s]+)");
+                string explicitTarget=targetMatch.Success?(targetMatch.Groups[1].Success?targetMatch.Groups[1].Value:targetMatch.Groups[2].Value):null;
+                result.Operations.Add(new FridaExpectedOperation{Kind="write",Operation="write",Text="gravar codigo do entregavel",RawText=raw,ExplicitTarget=explicitTarget});
+                result.Operations.Add(new FridaExpectedOperation{Kind="compile",Text="compilar ou validar sintaxe na revisao atual",RawText=raw});
+                result.Operations.Add(new FridaExpectedOperation{Kind="test",Text="executar testes funcionais na revisao atual",RawText=raw});
+                result.RequiresTools=true;
+                return result;
+            }
+
             for(int index=0;index<parts.Length;index++)
             {
                 string part=parts[index];string rawPart=rawParts.Length==parts.Length?rawParts[index]:raw;
                 if(explanatory && part==parts[0])continue;
+                string partDirect=FridaInteractionPolicy.StripSubordinateInfinitives(part);
                 string kind=null;
                 if(Regex.IsMatch(part,@"\b(whatsapp|whats|wpp|zap)\b") && Regex.IsMatch(part,@"\b(grupos?|mensagens?|status|conectado|pareie|parear|conecte|conectar|vincule|novidades|nao lidas)\b"))kind="whatsapp";
                 else if(Regex.IsMatch(part,@"\b(desligar|desligue|desligamento|reiniciar|reinicie|reinicializacao)\b"))kind="power";
-                else if(Regex.IsMatch(part,@"\b(abra|abre|abrir|inicie|iniciar)\b"))kind="open";
-                else if(Regex.IsMatch(part,@"\b(liste|listar|leia|ler|consulte|consultar|conteudo|quais arquivos|quais pastas)\b") && Regex.IsMatch(part,@"\b(arquivo|arquivos|pasta|pastas|diretorio|diretorios|documento|documentos|logs|conteudo)\b"))kind="read";
-                else if(Regex.IsMatch(part,@"\b(crie|criar|gere|gerar|salve|salvar|grave|gravar|escreva|escrever|copie|mova|renomeie|apague|exclua)\b"))kind="write";
-                else if(Regex.IsMatch(part,@"\b(analise|revise|confira|verifique|audite|valide|diagnostique)\b") && Regex.IsMatch(part,@"\b(arquivo|documento|pasta|projeto|repositorio|logs)\b"))kind="review";
-                else if(Regex.IsMatch(part,@"\b(execute|executar|rode|rodar|use|utilize|programe|agende|configure|instale|corrija|implemente|construa|desenvolva|feche|fechar|minimize|maximize|restaure|limpe|limpar|otimize|remova|suspenda|suspender|hiberne|hibernar|ajuste|aumente|diminua|silencie|ative|desative|mate|finalize|encerre|lembre|registre|anote|compile|teste|organize|repare|conserte|atualize)\b"))kind="execute";
+                else if(Regex.IsMatch(part,@"\b(veja|olhe|leia|analise|inspecione|descreva|o que tem|o que ha|o que esta)\b") && Regex.IsMatch(part,@"\b(minha tela|na tela|essa tela|esta tela|tela aberta)\b") && !Regex.IsMatch(part,@"\b(coloque|colocar|mostre|mostrar|abra|abrir|jogue|jogar)\b"))kind="screen";
+                else if(Regex.IsMatch(partDirect,@"\b(abra|abre|abrir|inicie|iniciar)\b")
+                    || (Regex.IsMatch(partDirect,@"\b(acesse|acessar|coloque|colocar|mostre|mostrar)\b") && Regex.IsMatch(part,@"\b(navegador|chrome|edge|firefox|brave|opera|site|pagina|link|url|minha tela|na tela)\b"))
+                    || Regex.IsMatch(part,@"^(?:o\s+)?(?:google\s+)?(?:chrome|edge|firefox|brave|opera|navegador)\s+e\s+(?:pesquis\w*|busqu\w*|procur\w*)\b"))kind="open";
+                else if(Regex.IsMatch(partDirect,@"\b(liste|listar|leia|ler|consulte|consultar|conteudo|quais arquivos|quais pastas)\b") && Regex.IsMatch(part,@"\b(arquivo|arquivos|pasta|pastas|diretorio|diretorios|documento|documentos|logs|conteudo)\b"))kind="read";
+                else if(Regex.IsMatch(partDirect,@"\b(crie|criar|gere|gerar|salve|salvar|grave|gravar|escreva|escrever|copie|mova|renomeie|apague|exclua)\b"))kind="write";
+                else if(Regex.IsMatch(partDirect,@"\b(analise|revise|confira|verifique|audite|valide|diagnostique)\b") && Regex.IsMatch(part,@"\b(arquivo|documento|pasta|projeto|repositorio|logs)\b"))kind="review";
+                else if(Regex.IsMatch(partDirect,@"\b(execute|executar|rode|rodar|use|utilize|programe|agende|configure|instale|corrija|implemente|construa|desenvolva|feche|fechar|minimize|maximize|restaure|limpe|limpar|otimize|remova|suspenda|suspender|hiberne|hibernar|ajuste|aumente|diminua|silencie|ative|desative|mate|finalize|encerre|lembre|registre|anote|compile|teste|organize|repare|conserte|atualize)\b"))kind="execute";
                 else if(Regex.IsMatch(part,@"\b(pesquise|pesquisar|busque|procure|investigue)\b") || FridaEconomyRouting.NeedsFreshData(raw))kind="research";
-                else if(Regex.IsMatch(part,@"\b(cpu|memoria|processos|hardware|temperatura|consumo|espaco livre)\b"))kind="inspect";
+                else if(Regex.IsMatch(part,@"\b(cpu|processador|memoria|processos|hardware|temperatura|consumo|espaco livre|pendrive|ip|endereco ip|placa|disco)\b"))kind="inspect";
                 else if(Regex.IsMatch(part,@"\b(quero|preciso|necessito|gostaria)\b") && Regex.IsMatch(part,@"\b(um programa|uma aplicacao|um aplicativo|um sistema|um script|um site|um dashboard|uma ferramenta)\b"))kind="execute";
                 if(kind!=null)
                 {
                     var target=Regex.Match(rawPart,"\"([a-zA-Z]:[\\\\/][^\"]+)\"|([a-zA-Z]:[\\\\/][^\\s]+)");
                     string operation=null;
                     if(kind=="write")operation=Regex.IsMatch(part,@"\b(apague|exclua|remova)\b")?"delete":Regex.IsMatch(part,@"\b(pasta|diretorio)\b")?"mkdir":"write";
-                    if(kind=="whatsapp")operation=Regex.IsMatch(part,@"\b(pareie|parear|conecte|conectar|vincule)\b")?"pair":Regex.IsMatch(part,@"\b(status|conectado)\b")?"status":Regex.IsMatch(part,@"\b(nao lidas|mensagens novas|novidades)\b")?"read_unread":Regex.IsMatch(part,@"\b(grupos|quais grupos|liste grupos)\b")?"list_groups":null;
+                    if(kind=="whatsapp")operation=Regex.IsMatch(part,@"\b(pareie|parear|conecte|conectar|vincule)\b")?"pair":FridaWhatsAppRequest.SessionStatus(part)?"status":FridaWhatsAppPlan.SimpleStatus(part,false)!=null?"search":Regex.IsMatch(part,@"\b(nao lidas|mensagens novas|novidades)\b")?"read_unread":Regex.IsMatch(part,@"\b(grupos|quais grupos|liste grupos)\b")?"list_groups":null;
                     result.Operations.Add(new FridaExpectedOperation{Kind=kind,Text=part,RawText=rawPart,Operation=operation,ExplicitTarget=target.Success?(target.Groups[1].Success?target.Groups[1].Value:target.Groups[2].Value):null});
                 }
             }
@@ -86,9 +121,15 @@ namespace FridaAgent
             var available=receipts.Where(r=>r.SupersededBy==null).ToList();var missing=new List<FridaExpectedOperation>();
             foreach(var op in Operations)
             {
-                // Match a receipt once. Failed attempts still cover a step, but cannot prove success.
+                // Match a receipt once. A combined compile+test validation receipt can satisfy both compile and test.
                 int i=available.FindIndex(op.Matches);
-                if(i<0)missing.Add(op);else available.RemoveAt(i);
+                if(i<0)
+                {
+                    bool satisfiedByCombined = (op.Kind=="compile" || op.Kind=="test")
+                        && receipts.Any(r=>r.SupersededBy==null && r.Scope=="tests_passed_with_compile" && op.Matches(r));
+                    if(!satisfiedByCombined)missing.Add(op);
+                }
+                else available.RemoveAt(i);
             }
             return missing;
         }
@@ -100,7 +141,7 @@ namespace FridaAgent
         {
             ledger.Revalidate();ledger.SetIntent(intent);
             if(!intent.RequiresTools)return modelReply;
-            var receipts=ledger.Receipts.Where(r=>(r.Status!=FridaResultStatus.ModelAnalysis || r.Tool=="web_research") && r.SupersededBy==null).ToArray();
+            var receipts=ledger.Receipts.Where(r=>(r.Status!=FridaResultStatus.ModelAnalysis || r.Tool=="web_research" || r.Tool=="inspect_screen") && r.SupersededBy==null).ToArray();
             if(receipts.Length==0)return "A operacao solicitada nao foi executada. "+(ledger.StopMessage ?? "Nenhum resultado de ferramenta foi registrado.");
             var lines=new List<string>();
             foreach(var r in receipts)
@@ -111,17 +152,38 @@ namespace FridaAgent
                     lines.Add(r.Output);object sources;
                     if(r.Data.TryGetValue("sources",out sources))lines.Add(string.Join("\n",((System.Collections.IEnumerable)sources).Cast<object>().Select(Convert.ToString).ToArray()));
                 }
-                else if(!r.IsAction && (r.Status==FridaResultStatus.Verified || r.Status==FridaResultStatus.Partial) && r.Tool=="manage_files")lines.Add(r.Output);
-                else if(r.Tool=="run_powershell")lines.Add(r.Summary+"\n"+r.Output);
+                else if(r.Tool=="inspect_screen")lines.Add(r.Output);
+                else if(!r.IsAction && (r.Status==FridaResultStatus.Verified || r.Status==FridaResultStatus.Partial) && (r.Tool=="manage_files" || r.Tool=="read_code" || r.Tool=="search_symbols" || r.Tool=="inspect_project"))lines.Add(r.Output);
+                else if(r.Tool=="run_powershell" || r.Tool=="run_project_validation")lines.Add(r.Summary+"\n"+r.Output);
                 else lines.Add(r.Summary);
             }
             var missing=intent.Missing(receipts);
             if(missing.Count>0)lines.Add("Etapas pendentes: "+string.Join("; ",missing.Select(x=>x.Text).ToArray())+".");
-            if(missing.Count==0 && intent.Operations.Any(x=>x.Kind=="review") && receipts.Any(r=>r.Status==FridaResultStatus.Verified && !r.IsAction))
+            if(intent.IsSoftwareDevelopment)
             {
-                // Keep the useful analysis, while confirmations still come solely from adapter receipts.
-                string analysis=string.Join("\n",Regex.Split(modelReply ?? "",@"(?<=[.!?])\s+|[\r\n]+").Where(x=>!FridaReliability.HasCompletionClaim(x) && FridaReliability.GroundActivityClaims(x,false)==x).ToArray());
-                if(!string.IsNullOrWhiteSpace(analysis))lines.Add(analysis);
+                lines.Add(string.Format("[Estado de entrega ({0}): arquivo_salvo={1} | compilacao_aprovada={2} | testes_aprovados={3} | pedido_atendido={4}]",
+                    ledger.CurrentProjectRevision,
+                    ledger.FileSaved ? "SIM" : "NAO",
+                    ledger.CompilationApproved ? "SIM" : "NAO",
+                    ledger.TestsApproved ? "SIM" : "NAO",
+                    ledger.TaskCompletionVerified ? "SIM" : "NAO"));
+            }
+            bool isWhatsAppOnly = intent.Operations.Count > 0 && intent.Operations.All(x => x.Kind == "whatsapp");
+            bool isLongWebResearchOnly = receipts.Length > 0 && receipts.All(x => x.Tool == "web_research") && receipts.Sum(x => (x.Output ?? "").Length) >= 400;
+            bool hasUsableReceipts = receipts.Any(r =>
+                r.Status == FridaResultStatus.Verified
+                || r.Status == FridaResultStatus.ProcessCompleted
+                || r.Status == FridaResultStatus.Partial
+                || ((r.Tool == "web_research" || r.Tool == "inspect_screen") && r.Status == FridaResultStatus.ModelAnalysis));
+            if(missing.Count==0 && ledger.StopCode==null && !isWhatsAppOnly && (!intent.IsSoftwareDevelopment || ledger.TaskCompletionVerified) && hasUsableReceipts)
+            {
+                // Keep the useful copilot analysis, while confirmations still come solely from adapter receipts.
+                string analysis=string.Join("\n",Regex.Split(modelReply ?? "",@"(?<=[.!?])\s+|[\r\n]+").Where(x=>(ledger.TaskCompletionVerified || !FridaReliability.HasCompletionClaim(x)) && FridaReliability.GroundActivityClaims(x,true)==x).ToArray()).Trim();
+                if(!string.IsNullOrWhiteSpace(analysis) && !lines.Contains(analysis) && !(isLongWebResearchOnly && analysis.Length>=350))
+                {
+                    if(!intent.IsSoftwareDevelopment)lines.Insert(0,analysis);
+                    else lines.Add(analysis);
+                }
             }
             if(ledger.StopMessage!=null)lines.Add(ledger.StopMessage);
             return string.Join("\n",lines.Distinct().ToArray());
@@ -132,10 +194,10 @@ namespace FridaAgent
     {
         private static string Numbers(string text)
         {
-            var words=new Dictionary<string,string>{{"uma","1"},{"um","1"},{"duas","2"},{"dois","2"},{"tres","3"},{"quatro","4"},{"cinco","5"},{"seis","6"},{"sete","7"},{"oito","8"},{"nove","9"},{"dez","10"},{"quinze","15"},{"vinte","20"},{"trinta","30"},{"meia","0.5"}};
+            var words=new Dictionary<string,string>{{"uma","1"},{"um","1"},{"duas","2"},{"dois","2"},{"tres","3"},{"quatro","4"},{"cinco","5"},{"seis","6"},{"sete","7"},{"oito","8"},{"nove","9"},{"dez","10"},{"quinze","15"},{"vinte","20"},{"trinta","30"},{"quarenta","40"},{"cinquenta","50"},{"meia","0.5"}};
             text=Regex.Replace(text,@"\b(uma?|duas?|dois|tres|\d+)\s+horas?\s+e\s+meia\b","$1 horas e 30 minutos");
             foreach(var pair in words)text=Regex.Replace(text,@"\b"+pair.Key+@"\b",pair.Value);
-            text=Regex.Replace(text,@"\b(20|30)\s+e\s+([1-9])\b",m=>(int.Parse(m.Groups[1].Value)+int.Parse(m.Groups[2].Value)).ToString(CultureInfo.InvariantCulture));
+            text=Regex.Replace(text,@"\b(20|30|40|50)\s+e\s+([1-9])\b",m=>(int.Parse(m.Groups[1].Value)+int.Parse(m.Groups[2].Value)).ToString(CultureInfo.InvariantCulture));
             return text;
         }
         public static bool TryParse(string raw,out int seconds)
@@ -177,7 +239,7 @@ namespace FridaAgent
                 seconds=0;if(!cancel)FridaDuration.TryParse(request,out seconds);
                 bool restart=Regex.IsMatch(t,@"\b(reiniciar|reinicie|reinicializacao)\b");
                 string args=cancel?"/a":(restart?"/r":"/s")+" /t "+seconds;
-                var r=run("shutdown.exe",args);r.Tool="native_power";r.Operation=cancel?"cancel":restart?"restart":"shutdown";r.Target="Windows";
+                var r=run("shutdown.exe",args) ?? new FridaToolReceipt("native_power",cancel?"cancel":restart?"restart":"shutdown","Windows",true);r.Tool="native_power";r.Operation=cancel?"cancel":restart?"restart":"shutdown";r.Target="Windows";
                 r.Put("arguments",args);
                 object code;if(r.Data.TryGetValue("exit_code",out code) && Convert.ToInt32(code)==1116 && cancel)return r.Fail("no_shutdown_pending","Nao ha desligamento ou reinicializacao agendado para cancelar.");
                 if(r.Status==FridaResultStatus.ProcessCompleted)

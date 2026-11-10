@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
@@ -77,6 +78,56 @@ namespace FridaAgent
                 return result.Substring(offset,Math.Min(limit,result.Length-offset));
             }
         }
+        public static string ReadPdf(string path, int offset, int limit)
+        {
+            var psi = new ProcessStartInfo("python.exe")
+            {
+                Arguments = "-c \"import sys, PyPDF2; reader = PyPDF2.PdfReader(sys.argv[1]); text = [f'--- Pagina {i+1} ---\\n' + (p.extract_text() or '') for i, p in enumerate(reader.pages)]; sys.stdout.buffer.write(('\\n'.join(text)).encode('utf-8'))\" \"" + path.Replace("\"", "\\\"") + "\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8
+            };
+            using (var p = Process.Start(psi))
+            {
+                string full = p.StandardOutput.ReadToEnd();
+                p.WaitForExit(20000);
+                if (p.ExitCode != 0 || string.IsNullOrWhiteSpace(full))
+                {
+                    string err = p.StandardError.ReadToEnd();
+                    throw new IOException("Falha ao extrair texto do PDF: " + (string.IsNullOrWhiteSpace(err) ? "Retorno vazio." : err));
+                }
+                if (offset >= full.Length) return "";
+                return full.Substring(offset, Math.Min(limit, full.Length - offset));
+            }
+        }
+
+        public static string ReadXlsx(string path, int offset, int limit)
+        {
+            var psi = new ProcessStartInfo("python.exe")
+            {
+                Arguments = "-c \"import sys, openpyxl; wb = openpyxl.load_workbook(sys.argv[1], read_only=True, data_only=True); out = [];\nfor name in wb.sheetnames:\n    ws = wb[name]\n    out.append(f'=== Aba: {name} ===')\n    for idx, row in enumerate(ws.iter_rows(values_only=True)):\n        if idx > 100: out.append('... (demais linhas omitidas)'); break\n        vals = [str(c) if c is not None else '' for c in row]\n        if any(v.strip() for v in vals): out.append(' | '.join(vals))\nsys.stdout.buffer.write(('\\n'.join(out)).encode('utf-8'))\" \"" + path.Replace("\"", "\\\"") + "\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8
+            };
+            using (var p = Process.Start(psi))
+            {
+                string full = p.StandardOutput.ReadToEnd();
+                p.WaitForExit(20000);
+                if (p.ExitCode != 0 || string.IsNullOrWhiteSpace(full))
+                {
+                    string err = p.StandardError.ReadToEnd();
+                    throw new IOException("Falha ao extrair dados do arquivo Excel: " + (string.IsNullOrWhiteSpace(err) ? "Retorno vazio." : err));
+                }
+                if (offset >= full.Length) return "";
+                return full.Substring(offset, Math.Min(limit, full.Length - offset));
+            }
+        }
+
         public static string ReadText(string path, int offset, int limit)
         {return ReadSnapshot(path,offset,limit).Describe();}
         public static FridaTextRead ReadSnapshot(string path, int offset, int limit)
@@ -86,9 +137,11 @@ namespace FridaAgent
             string extension=Path.GetExtension(path).ToLowerInvariant();
             string value;
             if(extension==".docx") value=ReadDocx(path,offset,limit+1);
+            else if(extension==".pdf") value=ReadPdf(path,offset,limit+1);
+            else if(extension==".xlsx" || extension==".xls") value=ReadXlsx(path,offset,limit+1);
             else
             {
-                if(System.Text.RegularExpressions.Regex.IsMatch(extension,@"^\.(pdf|doc|xlsx|xls|pptx|ppt|exe|dll|zip|png|jpg|jpeg|gif|wav|mp3|dwg|sldprt|sldasm)$"))
+                if(System.Text.RegularExpressions.Regex.IsMatch(extension,@"^\.(doc|pptx|ppt|exe|dll|zip|png|jpg|jpeg|gif|wav|mp3|dwg|sldprt|sldasm)$"))
                     throw new IOException("Formato binario exige extracao ou ferramenta apropriada; nao pode ser interpretado como texto: "+extension);
                 using(var reader=new StreamReader(path,Encoding.UTF8,true))
                 {

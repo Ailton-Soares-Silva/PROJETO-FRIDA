@@ -126,6 +126,12 @@ namespace FridaAgent
     }
 
     /// <summary>Silero VAD v5. Uma instancia por thread de uso (o objeto nativo nao e thread-safe).</summary>
+    public sealed class TimedVoiceSegment
+    {
+        public long Start;
+        public float[] Samples;
+    }
+
     public sealed class SileroVoiceActivity : IDisposable
     {
         public const int SampleRate = 16000;
@@ -194,9 +200,16 @@ namespace FridaAgent
         /// <summary>Segmentos de fala separados por pausas, na ordem em que ocorreram.</summary>
         public List<float[]> ExtractSegments(byte[] pcm, int offset, int length)
         {
+            var samples = new List<float[]>();
+            foreach (var segment in ExtractTimedSegments(pcm, offset, length)) samples.Add(segment.Samples);
+            return samples;
+        }
+
+        public List<TimedVoiceSegment> ExtractTimedSegments(byte[] pcm, int offset, int length)
+        {
             lock (_sync)
             {
-                var segments = new List<float[]>();
+                var segments = new List<TimedVoiceSegment>();
                 if (_vad == IntPtr.Zero || pcm == null || length < 2) return segments;
                 SherpaNative.SherpaOnnxVoiceActivityDetectorReset(_vad);
                 float[] f = SherpaNative.ToFloat(pcm, offset, length & ~1);
@@ -220,8 +233,8 @@ namespace FridaAgent
 
         private sealed class SegmentSink
         {
-            public readonly List<float[]> Items;
-            public SegmentSink(List<float[]> items) { Items = items; }
+            public readonly List<TimedVoiceSegment> Items;
+            public SegmentSink(List<TimedVoiceSegment> items) { Items = items; }
         }
 
         private void DrainLocked(SegmentSink sink)
@@ -238,7 +251,7 @@ namespace FridaAgent
                         {
                             var buf = new float[s.n];
                             Marshal.Copy(s.samples, buf, 0, s.n);
-                            sink.Items.Add(buf);
+                            sink.Items.Add(new TimedVoiceSegment { Start = s.start, Samples = buf });
                         }
                     }
                     SherpaNative.SherpaOnnxDestroySpeechSegment(seg);
